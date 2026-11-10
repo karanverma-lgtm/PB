@@ -43,12 +43,18 @@ A full-featured Telegram bot that tracks product prices across **6 major e-comme
 
 ---
 
-## 🚀 Deployment
+## 🚀 Deployment & Cloud Persistence
 
 The bot includes deployment blueprints for 24/7 cloud hosting on **Railway**, **Render**, or any Docker host:
 - `Procfile` & `render.yaml` — Configured for cloud workers
 - `Dockerfile` — Ready for containerized deployment
 - `requirements.txt` — Dependencies (`python-telegram-bot[job-queue]`, `curl_cffi`, `beautifulsoup4`, `lxml`, `python-dotenv`)
+
+### 💾 Persistent Storage on Railway / Docker
+By default, Docker containers have ephemeral storage. To ensure tracked products survive container redeploys:
+1. In your **Railway Service Settings**, click **Add Volume** and mount it to `/data`.
+2. Add an environment variable in Railway: `DATA_DIR=/data`.
+3. The bot will automatically store `alerts.db` on the persistent volume with SQLite WAL (Write-Ahead Logging) mode enabled!
 
 ---
 

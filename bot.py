@@ -2,12 +2,17 @@
 
 Monitors Amazon, Flipkart, JioMart, Reliance Digital, Croma, and Samsung product prices
 and delivers automated alerts whenever a product's price drops to or below your desired target price.
+
+Engineered for 24/7 high concurrency, non-blocking asyncio execution, HTML entity safety,
+and persistent database caching across restarts.
 """
 
 import os
 import re
+import html
+import asyncio
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from dotenv import load_dotenv
 
 from telegram import (
@@ -53,6 +58,13 @@ def clean_price_input(price_str: str) -> float:
     return val
 
 
+def safe_caption(text: str, max_len: int = 1000) -> str:
+    """Ensure caption fits within Telegram's length limits."""
+    if len(text) > max_len:
+        return text[:max_len - 3] + "..."
+    return text
+
+
 # ---------------------------------------------------------
 # Command Handlers
 # ---------------------------------------------------------
@@ -60,28 +72,28 @@ def clean_price_input(price_str: str) -> float:
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send welcome message and guide the user on how to track products."""
     user = update.effective_user
-    name = user.first_name if user else "Shopper"
+    name = html.escape(user.first_name) if user and user.first_name else "Shopper"
 
     text = (
-        f"👋 *Welcome to Price Drop Alert Bot, {name}!*\n\n"
-        "🛍️ Never miss a deal! Send me any product link from **6 major platforms**, set your desired target price, "
+        f"👋 <b>Welcome to Price Drop Alert Bot, {name}!</b>\n\n"
+        "🛍️ Never miss a deal! Send me any product link from <b>6 major platforms</b>, set your desired target price, "
         "and I will notify you the moment the price drops!\n\n"
-        "⚡ *Supported Platforms:*\n"
-        "• 📦 **Amazon India & Global** (`amazon.in`, `amzn.to`, `amazon.com`)\n"
-        "• 🛍️ **Flipkart** (`flipkart.com`, `dl.flipkart.com`)\n"
-        "• 🟢 **JioMart** (`jiomart.com`)\n"
-        "• 🔴 **Reliance Digital** (`reliancedigital.in`)\n"
-        "• ⚪ **Croma** (`croma.com`)\n"
-        "• 🌌 **Samsung India** (`samsung.com/in`)\n\n"
-        "⚡ *How to use:*\n"
-        "1. Simply **paste or share any product link** into this chat.\n"
+        "⚡ <b>Supported Platforms:</b>\n"
+        "• 📦 <b>Amazon India & Global</b> (<code>amazon.in</code>, <code>amzn.to</code>, <code>amazon.com</code>)\n"
+        "• 🛍️ <b>Flipkart</b> (<code>flipkart.com</code>, <code>dl.flipkart.com</code>)\n"
+        "• 🟢 <b>JioMart</b> (<code>jiomart.com</code>)\n"
+        "• 🔴 <b>Reliance Digital</b> (<code>reliancedigital.in</code>)\n"
+        "• ⚪ <b>Croma</b> (<code>croma.com</code>)\n"
+        "• 🌌 <b>Samsung India</b> (<code>samsung.com/in</code>)\n\n"
+        "⚡ <b>How to use:</b>\n"
+        "1. Simply <b>paste or share any product link</b> into this chat.\n"
         "2. Choose a quick discount button (5%, 10%, 15% drop) or set your own target!\n\n"
-        "📋 *Commands:*\n"
-        "• `/track <URL> <DESIRED_PRICE>` — Track product with target price\n"
-        "• `/products` — View and manage all your tracked items\n"
-        "• `/deltrack <ID>` — Stop tracking a product\n"
-        "• `/cleartrack` — Clear all tracked products\n"
-        "• `/help` — Detailed guide & examples"
+        "📋 <b>Commands:</b>\n"
+        "• <code>/track &lt;URL&gt; &lt;DESIRED_PRICE&gt;</code> — Track product with target price\n"
+        "• <code>/products</code> — View and manage all your tracked items\n"
+        "• <code>/deltrack &lt;ID&gt;</code> — Stop tracking a product\n"
+        "• <code>/cleartrack</code> — Clear all tracked products\n"
+        "• <code>/help</code> — Detailed guide & examples"
     )
 
     keyboard = [
@@ -92,49 +104,49 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send detailed help and usage guide."""
     text = (
-        "📚 *Price Drop Tracker Guide*\n\n"
-        "🛒 *Tracking an Item:*\n"
-        "**Method 1 (Fastest):**\n"
+        "📚 <b>Price Drop Tracker Guide</b>\n\n"
+        "🛒 <b>Tracking an Item:</b>\n"
+        "<b>Method 1 (Fastest):</b>\n"
         "Just copy any product link from Amazon, Flipkart, JioMart, Reliance Digital, Croma, or Samsung and paste it into this chat! "
         "The bot will automatically fetch the item and let you pick your target price.\n\n"
-        "**Method 2 (Command):**\n"
-        "`/track <PRODUCT_LINK> <DESIRED_PRICE>`\n\n"
-        "⚡ *Examples across platforms:*\n"
-        "• `/track https://www.amazon.in/dp/B09G9BL5CP 75000`\n"
-        "• `/track https://www.flipkart.com/... 55000`\n"
-        "• `/track https://www.croma.com/.../p/300652 56000`\n"
-        "• `/track https://www.reliancedigital.in/.../p/493839309 56000`\n"
-        "• `/track https://www.jiomart.com/... 56000`\n"
-        "• `/track https://www.samsung.com/in/... 75000`\n\n"
-        "📋 *Managing Your Products:*\n"
-        "• `/products` or `/alerts` — See all your tracked items\n"
-        "• `/deltrack <ID>` — Delete a tracked item\n"
-        "• `/cleartrack` — Remove all your tracked items"
+        "<b>Method 2 (Command):</b>\n"
+        "<code>/track &lt;PRODUCT_LINK&gt; &lt;DESIRED_PRICE&gt;</code>\n\n"
+        "⚡ <b>Examples across platforms:</b>\n"
+        "• <code>/track https://www.amazon.in/dp/B09G9BL5CP 75000</code>\n"
+        "• <code>/track https://www.flipkart.com/... 55000</code>\n"
+        "• <code>/track https://www.croma.com/.../p/300652 56000</code>\n"
+        "• <code>/track https://www.reliancedigital.in/.../p/493839309 56000</code>\n"
+        "• <code>/track https://www.jiomart.com/... 56000</code>\n"
+        "• <code>/track https://www.samsung.com/in/... 75000</code>\n\n"
+        "📋 <b>Managing Your Products:</b>\n"
+        "• <code>/products</code> or <code>/alerts</code> — See all your tracked items\n"
+        "• <code>/deltrack &lt;ID&gt;</code> — Delete a tracked item\n"
+        "• <code>/cleartrack</code> — Remove all your tracked items"
     )
     if update.message:
-        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+        await update.message.reply_text(text, parse_mode=ParseMode.HTML)
     elif update.callback_query:
-        await update.callback_query.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+        await update.callback_query.message.reply_text(text, parse_mode=ParseMode.HTML)
 
 
 async def track_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Track an Amazon or Flipkart product at a specified target price."""
+    """Track a product from any of the 6 platforms at a specified target price."""
     user = update.effective_user
     chat_id = update.effective_chat.id
 
     if not context.args or len(context.args) < 2:
         await update.message.reply_text(
-            "⚠️ *Invalid Format!*\n\n"
-            "Usage: `/track <PRODUCT_URL> <DESIRED_PRICE>`\n"
-            "Example: `/track https://www.flipkart.com/... 55000`\n"
-            "Example: `/track https://www.amazon.in/... 75000`",
-            parse_mode=ParseMode.MARKDOWN,
+            "⚠️ <b>Invalid Format!</b>\n\n"
+            "Usage: <code>/track &lt;PRODUCT_URL&gt; &lt;DESIRED_PRICE&gt;</code>\n"
+            "Example: <code>/track https://www.flipkart.com/... 55000</code>\n"
+            "Example: <code>/track https://www.amazon.in/... 75000</code>",
+            parse_mode=ParseMode.HTML,
         )
         return
 
@@ -142,20 +154,21 @@ async def track_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     try:
         target_price = clean_price_input(context.args[1])
     except ValueError as e:
-        await update.message.reply_text(f"❌ Invalid target price: {e}")
+        await update.message.reply_text(f"❌ Invalid target price: {html.escape(str(e))}")
         return
 
     loading_msg = await update.message.reply_text("🔍 Fetching product details... Please wait a moment.")
 
-    product = product_service.fetch_product(url)
+    # Run scraper in thread pool to prevent blocking asyncio event loop
+    product = await asyncio.to_thread(product_service.fetch_product, url)
     if not product:
         await loading_msg.edit_text(
-            "❌ Could not extract details from this link.\n\n"
-            "⚠️ *Common reasons:*\n"
-            "• The item is currently **out of stock** or unavailable.\n"
+            "❌ <b>Could not extract details from this link.</b>\n\n"
+            "⚠️ <i>Common reasons:</i>\n"
+            "• The item is currently <b>out of stock</b> or unavailable.\n"
             "• The link is a search results page rather than an individual product page.\n"
             "• Make sure you copy the link directly from the product page.",
-            parse_mode=ParseMode.MARKDOWN,
+            parse_mode=ParseMode.HTML,
         )
         return
 
@@ -188,14 +201,17 @@ async def track_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         currency=currency,
     )
 
+    title_escaped = html.escape(product["title"][:75])
+    badge_escaped = html.escape(product.get("platform_badge", platform))
+
     caption = (
-        f"✅ *Product Successfully Tracked!* (ID: `#{product_id}`)\n"
+        f"✅ <b>Product Successfully Tracked!</b> (ID: <code>#{product_id}</code>)\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
-        f"🏷️ *Platform:* `{product['platform_badge']}`\n"
-        f"📦 *{product['title'][:70]}...*\n\n"
-        f"💰 *Current Price:* `{currency}{curr_price:,.2f}`\n"
-        f"🎯 *Target Price:* `{currency}{target_price:,.2f}`\n"
-        f"📉 *Target Savings:* `{currency}{savings:,.2f} ({savings_pct:.1f}% OFF)`\n"
+        f"🏷️ <b>Platform:</b> <code>{badge_escaped}</code>\n"
+        f"📦 <b>{title_escaped}...</b>\n\n"
+        f"💰 <b>Current Price:</b> <code>{currency}{curr_price:,.2f}</code>\n"
+        f"🎯 <b>Target Price:</b> <code>{currency}{target_price:,.2f}</code>\n"
+        f"📉 <b>Target Savings:</b> <code>{currency}{savings:,.2f} ({savings_pct:.1f}% OFF)</code>\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
         f"🔔 I am actively monitoring this item and will alert you the moment the price drops!"
     )
@@ -211,21 +227,24 @@ async def track_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    await loading_msg.delete()
+    try:
+        await loading_msg.delete()
+    except Exception:
+        pass
 
     if product.get("image_url"):
         try:
             await update.message.reply_photo(
                 photo=product["image_url"],
-                caption=caption,
-                parse_mode=ParseMode.MARKDOWN,
+                caption=safe_caption(caption),
+                parse_mode=ParseMode.HTML,
                 reply_markup=reply_markup,
             )
             return
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Could not send photo, falling back to text: {e}")
 
-    await update.message.reply_text(caption, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+    await update.message.reply_text(caption, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
 
 
 async def list_products_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -235,17 +254,17 @@ async def list_products_command(update: Update, context: ContextTypes.DEFAULT_TY
 
     if not products:
         text = (
-            "📭 *You are not tracking any products yet.*\n\n"
-            "Paste any Amazon or Flipkart link in this chat or use:\n"
-            "`/track <PRODUCT_URL> <TARGET_PRICE>`"
+            "📭 <b>You are not tracking any products yet.</b>\n\n"
+            "Paste any product link in this chat or use:\n"
+            "<code>/track &lt;PRODUCT_URL&gt; &lt;TARGET_PRICE&gt;</code>"
         )
         if update.message:
-            await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+            await update.message.reply_text(text, parse_mode=ParseMode.HTML)
         elif update.callback_query:
-            await update.callback_query.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+            await update.callback_query.message.reply_text(text, parse_mode=ParseMode.HTML)
         return
 
-    text = f"📋 *Your Tracked Products ({len(products)}):*\n━━━━━━━━━━━━━━━━━━━\n\n"
+    text = f"📋 <b>Your Tracked Products ({len(products)}):</b>\n━━━━━━━━━━━━━━━━━━━\n\n"
     keyboard = []
 
     icons = {
@@ -262,11 +281,12 @@ async def list_products_command(update: Update, context: ContextTypes.DEFAULT_TY
         curr_str = f"{p['currency']}{p['current_price']:,.2f}"
         target_str = f"{p['currency']}{p['target_price']:,.2f}"
         platform_icon = icons.get(p.get("platform"), "🏷️")
+        p_title = html.escape(p["title"][:38])
 
         text += (
-            f"• *ID `#{p['id']}`:* {platform_icon} [{p['title'][:38]}...]({p['url']})\n"
-            f"  💰 Current: `{curr_str}` ➔ Target: `{target_str}` "
-            f"_(Needs {p['currency']}{savings:,.2f} drop)_\n\n"
+            f"• <b>ID <code>#{p['id']}</code>:</b> {platform_icon} <a href=\"{p['url']}\">{p_title}...</a>\n"
+            f"  💰 Current: <code>{curr_str}</code> ➔ Target: <code>{target_str}</code> "
+            f"<i>(Needs {p['currency']}{savings:,.2f} drop)</i>\n\n"
         )
         keyboard.append([
             InlineKeyboardButton(f"🛒 #{p['id']} View", url=p["url"]),
@@ -277,16 +297,16 @@ async def list_products_command(update: Update, context: ContextTypes.DEFAULT_TY
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     if update.message:
-        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup, disable_web_page_preview=True)
+        await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=reply_markup, disable_web_page_preview=True)
     elif update.callback_query:
-        await update.callback_query.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup, disable_web_page_preview=True)
+        await update.callback_query.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=reply_markup, disable_web_page_preview=True)
 
 
 async def deltrack_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Delete a tracked product by ID."""
     user = update.effective_user
     if not context.args:
-        await update.message.reply_text("⚠️ Usage: `/deltrack <ID>`\nCheck your product IDs with `/products`.", parse_mode=ParseMode.MARKDOWN)
+        await update.message.reply_text("⚠️ Usage: <code>/deltrack &lt;ID&gt;</code>\nCheck your product IDs with <code>/products</code>.", parse_mode=ParseMode.HTML)
         return
 
     try:
@@ -297,9 +317,9 @@ async def deltrack_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     success = database.delete_tracked_product(product_id, user_id=user.id)
     if success:
-        await update.message.reply_text(f"✅ Product `#{product_id}` tracking stopped.", parse_mode=ParseMode.MARKDOWN)
+        await update.message.reply_text(f"✅ Product <code>#{product_id}</code> tracking stopped.", parse_mode=ParseMode.HTML)
     else:
-        await update.message.reply_text(f"❌ Product `#{product_id}` not found or already removed.", parse_mode=ParseMode.MARKDOWN)
+        await update.message.reply_text(f"❌ Product <code>#{product_id}</code> not found or already removed.", parse_mode=ParseMode.HTML)
 
 
 async def cleartrack_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -314,7 +334,7 @@ async def cleartrack_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 # ---------------------------------------------------------
 
 async def handle_url_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Detect when a user pastes an Amazon or Flipkart link without any command."""
+    """Detect when a user pastes a product link from any of the 6 supported platforms."""
     if not update.message or not update.message.text:
         return
 
@@ -324,17 +344,22 @@ async def handle_url_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
 
     loading = await update.message.reply_text(f"🔎 {platform} link detected! Fetching current price and details...")
-    product = product_service.fetch_product(raw_text)
+
+    # Run scraper in thread pool to prevent blocking asyncio event loop
+    product = await asyncio.to_thread(product_service.fetch_product, raw_text)
     if not product:
         await loading.edit_text(
-            f"❌ Could not extract details from this {platform} link.\n\n"
-            "⚠️ *Please check:*\n"
-            "1. Is the product currently **in stock**?\n"
+            f"❌ <b>Could not extract details from this {platform} link.</b>\n\n"
+            "⚠️ <i>Please check:</i>\n"
+            "1. Is the product currently <b>in stock</b>?\n"
             "2. Did you share an individual product link (not a search or category list)?\n"
-            "3. Try sending the link with `/track <LINK> <TARGET_PRICE>`",
-            parse_mode=ParseMode.MARKDOWN,
+            "3. Try sending the link with <code>/track &lt;LINK&gt; &lt;TARGET_PRICE&gt;</code>",
+            parse_mode=ParseMode.HTML,
         )
         return
+
+    # Persist pending product in SQLite database so button clicks survive bot restarts!
+    database.save_pending_product(product)
 
     curr_price = product["price"]
     currency = product["currency"]
@@ -343,14 +368,17 @@ async def handle_url_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
     p10 = round(curr_price * 0.90, 2)
     p15 = round(curr_price * 0.85, 2)
 
+    title_escaped = html.escape(product["title"][:75])
+    badge_escaped = html.escape(product.get("platform_badge", platform))
+
     caption = (
-        f"{product['platform_badge']} *{product['title'][:75]}...*\n"
+        f"{badge_escaped} <b>{title_escaped}...</b>\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
-        f"💰 *Current Price:* `{currency}{curr_price:,.2f}`\n\n"
-        f"🎯 *Select your desired price drop below:* or reply with `/track {product['url']} <price>`"
+        f"💰 <b>Current Price:</b> <code>{currency}{curr_price:,.2f}</code>\n\n"
+        f"🎯 <b>Select your desired price drop below:</b> or reply with <code>/track {product['url']} &lt;price&gt;</code>"
     )
 
-    # Store product data in context user_data
+    # Store in memory for instant access
     cache_key = f"prod_{product['item_id']}"
     context.user_data[cache_key] = product
 
@@ -366,21 +394,24 @@ async def handle_url_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    await loading.delete()
+    try:
+        await loading.delete()
+    except Exception:
+        pass
 
     if product.get("image_url"):
         try:
             await update.message.reply_photo(
                 photo=product["image_url"],
-                caption=caption,
-                parse_mode=ParseMode.MARKDOWN,
+                caption=safe_caption(caption),
+                parse_mode=ParseMode.HTML,
                 reply_markup=reply_markup,
             )
             return
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Could not send photo, falling back to text: {e}")
 
-    await update.message.reply_text(caption, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+    await update.message.reply_text(caption, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
 
 
 # ---------------------------------------------------------
@@ -398,7 +429,8 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         item_id = parts[1]
         target_price = float(parts[2])
 
-        product = context.user_data.get(f"prod_{item_id}")
+        # Look in memory first, then fallback to database pending_products (survives restarts!)
+        product = context.user_data.get(f"prod_{item_id}") or database.get_pending_product(item_id)
         if not product:
             await query.message.reply_text("❌ Session expired. Please re-paste the product link.")
             return
@@ -416,28 +448,37 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             currency=product["currency"],
         )
 
+        title_escaped = html.escape(product["title"][:70])
+        badge_escaped = html.escape(product.get("platform_badge", product["platform"]))
+
         confirm = (
-            f"✅ *Tracking Alert Activated!* (ID: `#{product_id}`)\n"
+            f"✅ <b>Tracking Alert Activated!</b> (ID: <code>#{product_id}</code>)\n"
             f"━━━━━━━━━━━━━━━━━━━\n"
-            f"🏷️ *Platform:* `{product['platform_badge']}`\n"
-            f"📦 *{product['title'][:70]}...*\n\n"
-            f"💰 *Current Price:* `{product['currency']}{product['price']:,.2f}`\n"
-            f"🎯 *Target Price:* `{product['currency']}{target_price:,.2f}`\n"
+            f"🏷️ <b>Platform:</b> <code>{badge_escaped}</code>\n"
+            f"📦 <b>{title_escaped}...</b>\n\n"
+            f"💰 <b>Current Price:</b> <code>{product['currency']}{product['price']:,.2f}</code>\n"
+            f"🎯 <b>Target Price:</b> <code>{product['currency']}{target_price:,.2f}</code>\n"
             f"━━━━━━━━━━━━━━━━━━━\n"
             f"🔔 I will notify you the moment the price drops to or below your target!"
         )
         if query.message.photo:
-            await query.edit_message_caption(confirm, parse_mode=ParseMode.MARKDOWN)
+            try:
+                await query.edit_message_caption(safe_caption(confirm), parse_mode=ParseMode.HTML)
+            except Exception:
+                await query.message.reply_text(confirm, parse_mode=ParseMode.HTML)
         else:
-            await query.edit_message_text(confirm, parse_mode=ParseMode.MARKDOWN)
+            try:
+                await query.edit_message_text(confirm, parse_mode=ParseMode.HTML)
+            except Exception:
+                await query.message.reply_text(confirm, parse_mode=ParseMode.HTML)
 
     elif data.startswith("del_"):
         product_id = int(data.split("_")[1])
         success = database.delete_tracked_product(product_id, user_id=query.from_user.id)
         if success:
-            await query.message.reply_text(f"✅ Product `#{product_id}` tracking stopped.", parse_mode=ParseMode.MARKDOWN)
+            await query.message.reply_text(f"✅ Product <code>#{product_id}</code> tracking stopped.", parse_mode=ParseMode.HTML)
         else:
-            await query.message.reply_text(f"❌ Product `#{product_id}` was already removed.", parse_mode=ParseMode.MARKDOWN)
+            await query.message.reply_text(f"❌ Product <code>#{product_id}</code> was already removed.", parse_mode=ParseMode.HTML)
 
     elif data == "list_products":
         await list_products_command(update, context)
@@ -451,13 +492,14 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 
 # ---------------------------------------------------------
-# Background Job: Amazon & Flipkart Price Drop Monitor
+# Background Job: Multi-Platform Price Drop Monitor
 # ---------------------------------------------------------
 
 async def check_prices_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Background worker that polls active tracked products for price drops.
     Dispatches notifications when current_price <= target_price.
+    Uses asyncio.to_thread and inter-request delays to protect the event loop.
     """
     products = database.get_all_active_products()
     if not products:
@@ -465,72 +507,92 @@ async def check_prices_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 
     logger.info(f"Checking prices for {len(products)} active tracked product(s)...")
 
+    # Group by URL to eliminate redundant network calls
     url_map: Dict[str, list] = {}
     for p in products:
         url_map.setdefault(p["url"], []).append(p)
 
     for url, items in url_map.items():
-        sample = items[0]
-        prod_data = product_service.fetch_product(url)
-        if not prod_data or not prod_data.get("price"):
-            continue
+        try:
+            # Run scraper in thread pool to prevent blocking asyncio event loop
+            prod_data = await asyncio.to_thread(product_service.fetch_product, url)
+            if not prod_data or not prod_data.get("price"):
+                continue
 
-        new_price = prod_data["price"]
+            new_price = prod_data["price"]
 
-        for item in items:
-            product_id = item["id"]
-            target_price = item["target_price"]
-            chat_id = item["chat_id"]
-            currency = item["currency"]
-            title = prod_data["title"]
-            prod_url = prod_data["url"]
-            image_url = prod_data.get("image_url")
-            platform = prod_data["platform"]
-            badge = prod_data.get("platform_badge", platform)
+            for item in items:
+                product_id = item["id"]
+                target_price = item["target_price"]
+                chat_id = item["chat_id"]
+                currency = item["currency"]
+                title = prod_data["title"]
+                prod_url = prod_data["url"]
+                image_url = prod_data.get("image_url")
+                platform = prod_data["platform"]
+                badge = prod_data.get("platform_badge", platform)
 
-            database.update_product_price(product_id, new_price)
+                database.update_product_price(product_id, new_price)
 
-            if new_price <= target_price:
-                database.mark_product_triggered(product_id, new_price)
-                logger.info(f"Price Drop Triggered: #{product_id} on {platform} at {new_price} (Target: {target_price})")
+                if new_price <= target_price:
+                    database.mark_product_triggered(product_id, new_price)
+                    logger.info(f"Price Drop Triggered: #{product_id} on {platform} at {new_price} (Target: {target_price})")
 
-                savings = item["initial_price"] - new_price
-                savings_pct = (savings / item["initial_price"] * 100) if item["initial_price"] > 0 else 0
+                    savings = item["initial_price"] - new_price
+                    savings_pct = (savings / item["initial_price"] * 100) if item["initial_price"] > 0 else 0
 
-                alert_text = (
-                    f"🎉🚨 *{badge} PRICE DROP ALERT!* 🚨🎉\n"
-                    f"━━━━━━━━━━━━━━━━━━━\n"
-                    f"📦 *{title[:75]}...*\n\n"
-                    f"🔥 *New Price:* `{currency}{new_price:,.2f}`\n"
-                    f"🎯 *Your Target:* `{currency}{target_price:,.2f}`\n"
-                    f"💰 *You Save:* `{currency}{savings:,.2f} ({savings_pct:.1f}% OFF)`\n"
-                    f"━━━━━━━━━━━━━━━━━━━\n"
-                    f"⚡ Grab it before the deal ends!"
-                )
+                    title_escaped = html.escape(title[:75])
+                    badge_escaped = html.escape(badge)
 
-                keyboard = [
-                    [InlineKeyboardButton(f"🛒 Buy Now on {platform}", url=prod_url)]
-                ]
-                reply_markup = InlineKeyboardMarkup(keyboard)
+                    alert_text = (
+                        f"🎉🚨 <b>{badge_escaped} PRICE DROP ALERT!</b> 🚨🎉\n"
+                        f"━━━━━━━━━━━━━━━━━━━\n"
+                        f"📦 <b>{title_escaped}...</b>\n\n"
+                        f"🔥 <b>New Price:</b> <code>{currency}{new_price:,.2f}</code>\n"
+                        f"🎯 <b>Your Target:</b> <code>{currency}{target_price:,.2f}</code>\n"
+                        f"💰 <b>You Save:</b> <code>{currency}{savings:,.2f} ({savings_pct:.1f}% OFF)</code>\n"
+                        f"━━━━━━━━━━━━━━━━━━━\n"
+                        f"⚡ Grab it before the deal ends!"
+                    )
 
-                try:
-                    if image_url:
-                        await context.bot.send_photo(
-                            chat_id=chat_id,
-                            photo=image_url,
-                            caption=alert_text,
-                            parse_mode=ParseMode.MARKDOWN,
-                            reply_markup=reply_markup,
-                        )
-                    else:
-                        await context.bot.send_message(
-                            chat_id=chat_id,
-                            text=alert_text,
-                            parse_mode=ParseMode.MARKDOWN,
-                            reply_markup=reply_markup,
-                        )
-                except Exception as e:
-                    logger.error(f"Failed to dispatch alert to chat {chat_id}: {e}")
+                    keyboard = [
+                        [InlineKeyboardButton(f"🛒 Buy Now on {platform}", url=prod_url)]
+                    ]
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+
+                    try:
+                        if image_url:
+                            await context.bot.send_photo(
+                                chat_id=chat_id,
+                                photo=image_url,
+                                caption=safe_caption(alert_text),
+                                parse_mode=ParseMode.HTML,
+                                reply_markup=reply_markup,
+                            )
+                        else:
+                            await context.bot.send_message(
+                                chat_id=chat_id,
+                                text=alert_text,
+                                parse_mode=ParseMode.HTML,
+                                reply_markup=reply_markup,
+                            )
+                    except Exception as e:
+                        logger.error(f"Failed to dispatch photo alert, trying text: {e}")
+                        try:
+                            await context.bot.send_message(
+                                chat_id=chat_id,
+                                text=alert_text,
+                                parse_mode=ParseMode.HTML,
+                                reply_markup=reply_markup,
+                            )
+                        except Exception as text_e:
+                            logger.error(f"Failed to dispatch text alert to chat {chat_id}: {text_e}")
+
+            # Jitter delay between different product URLs to prevent platform rate limits
+            await asyncio.sleep(1.2)
+        except Exception as e:
+            logger.error(f"Error checking price for {url}: {e}")
+            await asyncio.sleep(1.0)
 
 
 # ---------------------------------------------------------
@@ -544,7 +606,7 @@ def main() -> None:
         return
 
     database.init_db()
-    logger.info("Price Tracker Database initialized successfully.")
+    logger.info("Price Tracker Database initialized successfully with WAL mode.")
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 

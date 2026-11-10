@@ -8,19 +8,21 @@ Supports 6 major platforms:
 5. Croma (croma.com)
 6. Samsung India (samsung.com/in)
 
-Uses curl_cffi for browser TLS fingerprinting to reliably extract product title,
-current price, image, item ID, and platform without getting blocked.
+Uses curl_cffi for realistic browser TLS fingerprinting, location cookies,
+and robust selector cascading to reliably extract live prices, titles, images, and item IDs.
 """
 
 import json
 import re
+import time
 import logging
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from curl_cffi import requests
 from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
+# Default realistic browser headers with metro pincode cookies for Indian e-commerce
 HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
     "Accept-Language": "en-IN,en-US;q=0.9,en;q=0.8,hi;q=0.7",
@@ -34,6 +36,7 @@ HEADERS = {
     "Sec-Fetch-User": "?1",
     "Upgrade-Insecure-Requests": "1",
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+    "Cookie": "pincode=400001; delivery_pincode=400001; pin=400001; _pincode=400001; city=Mumbai",
 }
 
 
@@ -89,9 +92,10 @@ def extract_amazon_asin(text: str) -> Optional[str]:
 
 
 def fetch_amazon_product(url_or_asin: str) -> Optional[Dict[str, Any]]:
-    """Fetch live product details from Amazon."""
+    """Fetch live product details from Amazon with buy-box verification."""
     clean_target = clean_url_from_text(url_or_asin)
     try:
+        # Resolve short link (amzn.in or amzn.to)
         if "amzn.to" in clean_target or "amzn.in" in clean_target:
             try:
                 head_res = requests.get(
@@ -114,9 +118,19 @@ def fetch_amazon_product(url_or_asin: str) -> Optional[Dict[str, Any]]:
         domain = "amazon.com" if "amazon.com" in clean_target.lower() else "amazon.in"
         canonical_url = f"https://www.{domain}/dp/{asin}"
 
-        res = requests.get(canonical_url, impersonate="chrome120", headers=HEADERS, timeout=20)
-        if res.status_code != 200:
-            logger.error(f"Amazon HTTP {res.status_code} for {canonical_url}")
+        res = None
+        for attempt in range(2):
+            try:
+                res = requests.get(canonical_url, impersonate="chrome120", headers=HEADERS, timeout=20)
+                if res.status_code == 200:
+                    break
+                elif res.status_code in [429, 503]:
+                    time.sleep(1.5)
+            except Exception:
+                time.sleep(1.0)
+
+        if not res or res.status_code != 200:
+            logger.error(f"Amazon HTTP error for {canonical_url}")
             return None
 
         if "api-services-support@amazon.com" in res.text or "validateCaptcha" in res.text:
@@ -159,6 +173,7 @@ def fetch_amazon_product(url_or_asin: str) -> Optional[Dict[str, Any]]:
             for selector in [
                 "span.priceToPay span.a-offscreen",
                 "span.apexPriceToPay span.a-offscreen",
+                "div#corePrice_desktop span.a-price-whole",
                 "span.a-price.a-text-price span.a-offscreen",
                 "span#priceblock_ourprice",
                 "span#priceblock_dealprice",
@@ -172,7 +187,7 @@ def fetch_amazon_product(url_or_asin: str) -> Optional[Dict[str, Any]]:
                         price = float(match.group(0).replace(",", ""))
                         break
 
-        # 3. Regex search for currency on page if still None
+        # 3. Regex search for currency in buybox if still None
         if price is None:
             price_div = soup.find("div", id=re.compile(r"corePrice|apex_desktop|desktop_unifiedPrice|buybox"))
             if price_div:
@@ -534,7 +549,7 @@ def fetch_croma_product(url: str) -> Optional[Dict[str, Any]]:
 # =====================================================================
 
 def fetch_samsung_product(url: str) -> Optional[Dict[str, Any]]:
-    """Fetch live product details from Samsung India."""
+    """Fetch live product details from Samsung India with variant resolution."""
     clean_target = clean_url_from_text(url)
     try:
         res = requests.get(clean_target, impersonate="chrome120", headers=HEADERS, allow_redirects=True, timeout=20)
@@ -544,6 +559,10 @@ def fetch_samsung_product(url: str) -> Optional[Dict[str, Any]]:
 
         soup = BeautifulSoup(res.text, "html.parser")
         title, price, img_url, item_id = None, None, None, None
+
+        # Check for requested variant SKU in URL (e.g. ?SM-S928... or sm-s928...)
+        url_sku_match = re.search(r"sm-[a-z0-9]+", clean_target, re.IGNORECASE)
+        target_sku = url_sku_match.group(0).upper() if url_sku_match else None
 
         # Check JSON-LD
         for s in soup.find_all("script", type="application/ld+json"):
@@ -568,14 +587,20 @@ def fetch_samsung_product(url: str) -> Optional[Dict[str, Any]]:
                             title = item.get("name")
                         variants = item.get("hasVariant", [])
                         if variants:
-                            v0 = variants[0]
+                            # Try to match the exact SKU from the URL if specified
+                            chosen_variant = variants[0]
+                            if target_sku:
+                                for v in variants:
+                                    if v.get("sku") and target_sku in v.get("sku").upper():
+                                        chosen_variant = v
+                                        break
                             if not img_url:
-                                img = v0.get("image")
+                                img = chosen_variant.get("image")
                                 if img and img.startswith("//"):
                                     img = "https:" + img
                                 img_url = img
                             if not item_id:
-                                item_id = v0.get("sku")
+                                item_id = chosen_variant.get("sku")
             except Exception:
                 pass
 
@@ -591,9 +616,8 @@ def fetch_samsung_product(url: str) -> Optional[Dict[str, Any]]:
 
         # Fallback item_id from URL
         if not item_id:
-            m = re.search(r"sm-[a-z0-9]+", clean_target, re.IGNORECASE)
-            if m:
-                item_id = m.group(0).upper()
+            if target_sku:
+                item_id = target_sku
             else:
                 parts = [p for p in clean_target.rstrip("/").split("/") if p]
                 item_id = parts[-1] if parts else "SAMSUNG_ITEM"

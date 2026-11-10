@@ -71,6 +71,14 @@ def run_tests():
     test_user_id = 999888777
     database.clear_user_products(test_user_id)
 
+    # Test pending product caching across restarts
+    sample_prod = fetched_products[0]
+    database.save_pending_product(sample_prod)
+    cached = database.get_pending_product(sample_prod["item_id"])
+    assert cached is not None, "Pending product was not saved"
+    assert cached["item_id"] == sample_prod["item_id"], "Mismatch in pending product item_id"
+    print("  ✅ Pending product caching verified (survives bot restarts).")
+
     inserted_ids = []
     for prod in fetched_products:
         pid = database.add_tracked_product(
