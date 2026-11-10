@@ -24,8 +24,8 @@ def init_db() -> None:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
                 chat_id INTEGER NOT NULL,
-                platform TEXT DEFAULT 'Amazon', -- 'Amazon' or 'Flipkart'
-                item_id TEXT NOT NULL,
+                platform TEXT DEFAULT 'Amazon',
+                asin TEXT NOT NULL,
                 title TEXT NOT NULL,
                 url TEXT NOT NULL,
                 image_url TEXT,
@@ -40,11 +40,15 @@ def init_db() -> None:
             )
             """
         )
-        # Attempt to add platform column if upgrading from earlier schema
-        try:
-            cursor.execute("ALTER TABLE tracked_products ADD COLUMN platform TEXT DEFAULT 'Amazon'")
-        except sqlite3.OperationalError:
-            pass  # Already exists
+        # Check existing columns and migrate if needed
+        cursor.execute("PRAGMA table_info(tracked_products)")
+        columns = [row["name"] for row in cursor.fetchall()]
+
+        if "platform" not in columns:
+            try:
+                cursor.execute("ALTER TABLE tracked_products ADD COLUMN platform TEXT DEFAULT 'Amazon'")
+            except Exception:
+                pass
 
         cursor.execute(
             "CREATE INDEX IF NOT EXISTS idx_products_active ON tracked_products (is_active)"
@@ -73,7 +77,7 @@ def add_tracked_product(
         cursor.execute(
             """
             INSERT INTO tracked_products (
-                user_id, chat_id, platform, item_id, title, url, image_url,
+                user_id, chat_id, platform, asin, title, url, image_url,
                 target_price, initial_price, current_price, currency, is_active
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
@@ -102,7 +106,7 @@ def get_user_products(user_id: int) -> List[Dict[str, Any]]:
         cursor = conn.cursor()
         cursor.execute(
             """
-            SELECT id, user_id, chat_id, platform, item_id, title, url, image_url,
+            SELECT id, user_id, chat_id, platform, asin AS item_id, title, url, image_url,
                    target_price, initial_price, current_price, currency, created_at
             FROM tracked_products
             WHERE user_id = ? AND is_active = 1
@@ -119,7 +123,7 @@ def get_all_active_products() -> List[Dict[str, Any]]:
         cursor = conn.cursor()
         cursor.execute(
             """
-            SELECT id, user_id, chat_id, platform, item_id, title, url, image_url,
+            SELECT id, user_id, chat_id, platform, asin AS item_id, title, url, image_url,
                    target_price, initial_price, current_price, currency
             FROM tracked_products
             WHERE is_active = 1
