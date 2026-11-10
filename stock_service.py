@@ -1,13 +1,11 @@
-"""Stock data fetching and charting service using Yahoo Finance and Matplotlib.
-
-Supports global equities, Indian markets (NSE/BSE), commodities, currencies, and major indices.
-"""
+"""Stock data fetching, charting, technical analysis, and news service."""
 
 import io
 import re
 import logging
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import yfinance as yf
+import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -52,12 +50,15 @@ SYMBOL_ALIASES = {
     "CRUDE OIL": "CL=F",
     "OIL": "CL=F",
     "NATURAL GAS": "NG=F",
-    "BTC": "BTC-USD",
     "BITCOIN": "BTC-USD",
-    "ETH": "ETH-USD",
     "ETHEREUM": "ETH-USD",
-    "SOL": "SOL-USD",
     "SOLANA": "SOL-USD",
+}
+
+KNOWN_CRYPTOS = {
+    "BTC", "ETH", "SOL", "DOGE", "XRP", "ADA", "BNB", "DOT",
+    "AVAX", "LINK", "MATIC", "SHIB", "PEPE", "LTC", "NEAR",
+    "SUI", "APT", "XMR", "TRX", "TON", "XLM", "BCH", "UNI"
 }
 
 FRIENDLY_NAMES = {
@@ -73,13 +74,36 @@ FRIENDLY_NAMES = {
     "GC=F": "Gold Futures",
     "SI=F": "Silver Futures",
     "CL=F": "Crude Oil Futures",
+    "BTC-USD": "Bitcoin (USD)",
+    "ETH-USD": "Ethereum (USD)",
+    "SOL-USD": "Solana (USD)",
+    "DOGE-USD": "Dogecoin (USD)",
 }
 
 
 def resolve_symbol(raw: str) -> str:
-    """Normalize input and resolve aliases (e.g. 'NIFTY 50' -> '^NSEI')."""
-    cleaned = re.sub(r"\s+", " ", raw.strip()).upper()
-    return SYMBOL_ALIASES.get(cleaned, cleaned)
+    """Normalize input and resolve aliases (e.g. 'btcusd' -> 'BTC-USD', 'NIFTY 50' -> '^NSEI')."""
+    cleaned = re.sub(r"\s+", " ", raw.strip()).upper().replace("/", "").replace("_", "")
+
+    # Check direct aliases
+    if cleaned in SYMBOL_ALIASES:
+        return SYMBOL_ALIASES[cleaned]
+
+    # Handle Crypto formats: BTCUSDT -> BTC-USD, BTCUSD -> BTC-USD
+    if cleaned.endswith("USDT") and len(cleaned) > 4:
+        base = cleaned[:-4]
+        return f"{base}-USD"
+
+    if cleaned.endswith("USD") and "-" not in cleaned and len(cleaned) > 3:
+        base = cleaned[:-3]
+        if base in KNOWN_CRYPTOS or len(base) in [3, 4, 5]:
+            return f"{base}-USD"
+
+    # Handle bare crypto symbol: BTC -> BTC-USD
+    if cleaned in KNOWN_CRYPTOS:
+        return f"{cleaned}-USD"
+
+    return cleaned
 
 
 def _fetch_quote_for_ticker(ticker_symbol: str) -> Optional[Dict[str, Any]]:
@@ -88,7 +112,6 @@ def _fetch_quote_for_ticker(ticker_symbol: str) -> Optional[Dict[str, Any]]:
         ticker = yf.Ticker(ticker_symbol)
         fi = ticker.fast_info
 
-        # Handle both camelCase and snake_case attributes
         price = fi.get("lastPrice") or fi.get("last_price")
         prev_close = (
             fi.get("previousClose")
@@ -99,7 +122,6 @@ def _fetch_quote_for_ticker(ticker_symbol: str) -> Optional[Dict[str, Any]]:
         day_low = fi.get("dayLow") or fi.get("day_low")
         currency = fi.get("currency", "USD")
 
-        # Fallback to history if fast_info returned no price
         if price is None:
             hist = ticker.history(period="5d")
             if hist.empty:
@@ -117,7 +139,6 @@ def _fetch_quote_for_ticker(ticker_symbol: str) -> Optional[Dict[str, Any]]:
         change = price - prev_close
         change_pct = (change / prev_close * 100) if prev_close else 0.0
 
-        # Determine name
         name = FRIENDLY_NAMES.get(ticker_symbol)
         if not name:
             try:
@@ -146,25 +167,22 @@ def _fetch_quote_for_ticker(ticker_symbol: str) -> Optional[Dict[str, Any]]:
 
 
 def get_stock_quote(symbol: str) -> Optional[Dict[str, Any]]:
-    """
-    Fetch real-time stock quote from Yahoo Finance.
-    Handles aliases and auto-falls back to Indian NSE (.NS) if standard US ticker is not found.
-    """
+    """Fetch real-time stock quote from Yahoo Finance."""
     resolved = resolve_symbol(symbol)
     quote = _fetch_quote_for_ticker(resolved)
     if quote:
         return quote
 
-    # If not found and symbol has no exchange suffix, try Indian NSE (.NS)
+    # If it's a crypto pair ending with -USD that failed, don't fallback to .NS
+    if "-USD" in resolved:
+        return None
+
+    # Fallback to Indian markets if no suffix
     if not any(char in resolved for char in [".", "^", "=", "-"]):
-        nse_symbol = f"{resolved}.NS"
-        nse_quote = _fetch_quote_for_ticker(nse_symbol)
+        nse_quote = _fetch_quote_for_ticker(f"{resolved}.NS")
         if nse_quote:
             return nse_quote
-
-        # Also try BSE (.BO)
-        bse_symbol = f"{resolved}.BO"
-        bse_quote = _fetch_quote_for_ticker(bse_symbol)
+        bse_quote = _fetch_quote_for_ticker(f"{resolved}.BO")
         if bse_quote:
             return bse_quote
 
@@ -172,15 +190,12 @@ def get_stock_quote(symbol: str) -> Optional[Dict[str, Any]]:
 
 
 def generate_stock_chart(symbol: str, period: str = "1mo") -> Optional[io.BytesIO]:
-    """
-    Generate a price trend chart for the given symbol and return as a BytesIO stream.
-    """
+    """Generate a price trend chart for the given symbol."""
     resolved = resolve_symbol(symbol)
     try:
         ticker = yf.Ticker(resolved)
         hist = ticker.history(period=period)
 
-        # Fallback to .NS if needed
         if (hist.empty or len(hist) < 2) and not any(char in resolved for char in [".", "^", "=", "-"]):
             resolved = f"{resolved}.NS"
             ticker = yf.Ticker(resolved)
@@ -189,7 +204,6 @@ def generate_stock_chart(symbol: str, period: str = "1mo") -> Optional[io.BytesI
         if hist.empty or len(hist) < 2:
             return None
 
-        # Clean style setup
         plt.style.use("seaborn-v0_8-darkgrid" if "seaborn-v0_8-darkgrid" in plt.style.available else "default")
         fig, ax = plt.subplots(figsize=(9, 4.5), dpi=150)
         fig.patch.set_facecolor("#161b22")
@@ -234,4 +248,101 @@ def generate_stock_chart(symbol: str, period: str = "1mo") -> Optional[io.BytesI
         return buf
     except Exception as e:
         logger.error(f"Error generating chart for {resolved}: {e}")
+        return None
+
+
+def get_stock_news(symbol: str) -> List[Dict[str, str]]:
+    """Fetch top recent news articles for a symbol."""
+    resolved = resolve_symbol(symbol)
+    try:
+        ticker = yf.Ticker(resolved)
+        articles = []
+        for item in (ticker.news or [])[:4]:
+            content = item.get("content", {})
+            title = content.get("title") or item.get("title")
+            canonical = content.get("canonicalUrl", {})
+            url = canonical.get("url") or item.get("link")
+            provider = content.get("provider", {}).get("displayName") or item.get("publisher") or "Market News"
+            if title and url:
+                articles.append({
+                    "title": title,
+                    "url": url,
+                    "publisher": provider,
+                })
+        return articles
+    except Exception as e:
+        logger.error(f"Error fetching news for {resolved}: {e}")
+        return []
+
+
+def get_technical_analysis(symbol: str) -> Optional[Dict[str, Any]]:
+    """Calculate key technical indicators (RSI 14, SMA 50, SMA 200, 52w range)."""
+    resolved = resolve_symbol(symbol)
+    try:
+        ticker = yf.Ticker(resolved)
+        hist = ticker.history(period="1y")
+
+        if (hist.empty or len(hist) < 30) and not any(char in resolved for char in [".", "^", "=", "-"]):
+            resolved = f"{resolved}.NS"
+            ticker = yf.Ticker(resolved)
+            hist = ticker.history(period="1y")
+
+        if hist.empty or len(hist) < 20:
+            return None
+
+        close = hist["Close"]
+        current_price = float(close.iloc[-1])
+        currency = ticker.fast_info.get("currency", "USD")
+
+        # 50 and 200 Moving Averages
+        sma50 = float(close.rolling(window=50).mean().iloc[-1]) if len(close) >= 50 else None
+        sma200 = float(close.rolling(window=200).mean().iloc[-1]) if len(close) >= 200 else None
+
+        # RSI (14 period)
+        delta = close.diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / (loss.replace(0, 0.0001))
+        rsi = float((100 - (100 / (1 + rs))).iloc[-1])
+
+        high_52w = float(hist["High"].max())
+        low_52w = float(hist["Low"].min())
+
+        score = 0
+        if sma50 and current_price > sma50:
+            score += 1
+        if sma200 and current_price > sma200:
+            score += 1
+        if sma50 and sma200 and sma50 > sma200:
+            score += 1
+
+        if rsi > 70:
+            rsi_desc = "Overbought (> 70)"
+        elif rsi < 30:
+            rsi_desc = "Oversold (< 30)"
+        else:
+            rsi_desc = "Neutral (30-70)"
+
+        if score >= 2 and rsi < 70:
+            sentiment = "🟢 Bullish"
+        elif score == 0 or rsi > 70:
+            sentiment = "🔴 Bearish / Overheated"
+        else:
+            sentiment = "🟡 Neutral"
+
+        return {
+            "symbol": resolved,
+            "name": FRIENDLY_NAMES.get(resolved, resolved),
+            "price": round(current_price, 2),
+            "currency": currency,
+            "rsi": round(rsi, 1),
+            "rsi_desc": rsi_desc,
+            "sma50": round(sma50, 2) if sma50 else None,
+            "sma200": round(sma200, 2) if sma200 else None,
+            "high_52w": round(high_52w, 2),
+            "low_52w": round(low_52w, 2),
+            "sentiment": sentiment,
+        }
+    except Exception as e:
+        logger.error(f"Error calculating TA for {resolved}: {e}")
         return None

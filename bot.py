@@ -1,10 +1,10 @@
 """Telegram Stock Alert Bot (@Stockmightybot).
 
-Provides live stock prices, price charts, and automated target price notifications.
+Provides live stock prices, price charts, automated target price notifications,
+technical analysis, market news, and personal watchlists.
 """
 
 import os
-import re
 import logging
 from typing import Dict, Any
 from dotenv import load_dotenv
@@ -42,10 +42,7 @@ logger = logging.getLogger("StockMightyBot")
 # ---------------------------------------------------------
 
 def parse_symbol_and_target(args: list[str]) -> tuple[str, float]:
-    """
-    Parse symbol and target price from argument list.
-    Supports multi-word symbols like 'NIFTY 50 25044' or 'BANK NIFTY 60000'.
-    """
+    """Parse symbol and target price from argument list."""
     if len(args) < 2:
         raise ValueError("Need at least symbol and target price")
 
@@ -69,21 +66,23 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     text = (
         f"👋 *Welcome to StockMightyBot, {name}!*\n\n"
-        "I am your personal stock market assistant. I track real-time stock prices "
-        "and automatically notify you the moment a stock hits your target price!\n\n"
-        "⚡ *Quick Commands:*\n"
-        "• `/price <SYMBOL>` - Get real-time stock quote\n"
-        "• `/alert <SYMBOL> <TARGET>` - Set a price alert\n"
-        "• `/alerts` - View all your active alerts\n"
-        "• `/chart <SYMBOL>` - View price trend chart\n"
-        "• `/help` - View complete guide and examples\n\n"
-        "🔥 *Examples:*\n"
+        "I am your personal stock market companion. Track live prices, analyze technical indicators, "
+        "read real-time market news, and get instant notifications when your target prices are hit!\n\n"
+        "⚡ *Core Commands:*\n"
+        "• `/price <SYMBOL>` — Live market quote\n"
+        "• `/alert <SYMBOL> <TARGET>` — Set price target alert\n"
+        "• `/alerts` — View and manage your alerts\n"
+        "• `/chart <SYMBOL>` — Price trend chart (1d, 5d, 1mo, 3mo, 1y)\n"
+        "• `/ta <SYMBOL>` — Technical analysis (RSI, SMA 50/200)\n"
+        "• `/news <SYMBOL>` — Recent market news headlines\n"
+        "• `/watchlist` — View your personal watchlist\n"
+        "• `/help` — Complete syntax & examples\n\n"
+        "🔥 *Quick Examples:*\n"
         "  `/alert NIFTY 50 25044`\n"
-        "  `/alert BANK NIFTY 60000`\n"
-        "  `/alert RELIANCE 1350`\n"
-        "  `/alert AAPL 250`\n"
-        "  `/price NIFTY 50`\n"
-        "  `/chart TSLA`"
+        "  `/price RELIANCE`\n"
+        "  `/ta AAPL`\n"
+        "  `/news TSLA`\n"
+        "  `/chart NVDA`"
     )
 
     keyboard = [
@@ -92,7 +91,10 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             InlineKeyboardButton("🇺🇸 Apple Price", callback_data="price_AAPL"),
         ],
         [
-            InlineKeyboardButton("📋 My Active Alerts", callback_data="list_alerts"),
+            InlineKeyboardButton("📋 My Alerts", callback_data="list_alerts"),
+            InlineKeyboardButton("⭐ My Watchlist", callback_data="view_watchlist"),
+        ],
+        [
             InlineKeyboardButton("❓ Help & Guide", callback_data="help_menu"),
         ]
     ]
@@ -104,26 +106,26 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send detailed help and usage guide."""
     text = (
-        "📚 *StockMightyBot User Guide*\n\n"
-        "🔔 *Setting Up Target Price Alerts:*\n"
-        "`/alert <SYMBOL> <TARGET_PRICE>`\n\n"
-        "The bot automatically calculates whether your target is *Above* or *Below* the current market price.\n"
-        "• `/alert NIFTY 50 25044`\n"
-        "• `/alert BANK NIFTY 60000`\n"
-        "• `/alert AAPL 250` (Alert when Apple hits $250)\n"
-        "• `/alert TSLA 200` (Alert if Tesla drops to $200)\n\n"
-        "📈 *Checking Stock Quotes:*\n"
-        "`/price NIFTY 50` or `/price RELIANCE` or `/price AAPL`\n\n"
-        "📊 *Generating Technical Charts:*\n"
-        "`/chart NIFTY 50` or `/chart NVDA 3mo`\n"
-        "_(Periods: 1d, 5d, 1mo, 3mo, 1y)_\n\n"
-        "📋 *Managing Your Alerts:*\n"
-        "• `/alerts` - List active alerts with 1-click delete buttons\n"
-        "• `/delalert <ID>` - Delete a specific alert ID\n"
-        "• `/clearalerts` - Delete all your active alerts\n\n"
+        "📚 *StockMightyBot Complete Guide*\n\n"
+        "🔔 *Price Alerts:*\n"
+        "• `/alert <SYMBOL> <TARGET>` — Set target price (auto-detects above/below)\n"
+        "  _Example:_ `/alert NIFTY 50 25044`\n"
+        "  _Example:_ `/alert AAPL 250`\n"
+        "• `/alerts` — View active alerts with 1-click delete\n"
+        "• `/delalert <ID>` — Delete a specific alert\n"
+        "• `/clearalerts` — Delete all your active alerts\n\n"
+        "💰 *Quotes & Technicals:*\n"
+        "• `/price <SYMBOL>` — Real-time price quote\n"
+        "• `/chart <SYMBOL> [PERIOD]` — Trend chart (`1d`, `5d`, `1mo`, `3mo`, `1y`)\n"
+        "• `/ta <SYMBOL>` — Technical indicators (RSI 14, 50 & 200 SMA, Sentiment)\n"
+        "• `/news <SYMBOL>` — Latest market headlines with links\n\n"
+        "⭐ *Personal Watchlist:*\n"
+        "• `/watchlist` — View all your saved stocks in one board\n"
+        "• `/addwatch <SYMBOL>` — Add stock to watchlist\n"
+        "• `/delwatch <SYMBOL>` — Remove stock from watchlist\n\n"
         "🌐 *Supported Symbols:*\n"
         "• Indian Indices: `NIFTY 50`, `BANK NIFTY`, `FINNIFTY`, `SENSEX`, `INDIA VIX`\n"
-        "• Indian Equities: `RELIANCE`, `TCS`, `INFY`, `HDFCBANK`, `TATAMOTORS`\n"
+        "• Indian Stocks: `RELIANCE`, `TCS`, `INFY`, `HDFCBANK`, `TATAMOTORS`\n"
         "• US Stocks: `AAPL`, `MSFT`, `TSLA`, `GOOGL`, `AMZN`, `NVDA`\n"
         "• Crypto: `BTC`, `ETH`, `SOL`\n"
         "• Commodities: `GOLD`, `SILVER`, `CRUDE`"
@@ -180,7 +182,12 @@ async def send_stock_quote(chat_id: int, symbol: str, context: ContextTypes.DEFA
 
     keyboard = [
         [
-            InlineKeyboardButton("📊 View Chart", callback_data=f"chart_{quote['symbol']}"),
+            InlineKeyboardButton("📊 Chart", callback_data=f"chart_{quote['symbol']}"),
+            InlineKeyboardButton("📈 TA", callback_data=f"ta_{quote['symbol']}"),
+            InlineKeyboardButton("📰 News", callback_data=f"news_{quote['symbol']}"),
+        ],
+        [
+            InlineKeyboardButton("⭐ Add to Watchlist", callback_data=f"addwatch_{quote['symbol']}"),
             InlineKeyboardButton("🔄 Refresh", callback_data=f"price_{quote['symbol']}"),
         ]
     ]
@@ -213,7 +220,6 @@ async def alert_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await update.message.reply_text(f"❌ Error: {e}. Please enter a valid number for the target price.")
         return
 
-    # Fetch live price to determine condition (ABOVE vs BELOW)
     quote = stock_service.get_stock_quote(raw_symbol)
     if not quote:
         await update.message.reply_text(
@@ -386,6 +392,178 @@ async def send_stock_chart(chat_id: int, symbol: str, period: str, context: Cont
     )
 
 
+async def ta_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Calculate and display technical indicators."""
+    if not context.args:
+        await update.message.reply_text(
+            "⚠️ Usage: `/ta <SYMBOL>`\nExample: `/ta AAPL` or `/ta NIFTY 50`",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    symbol = " ".join(context.args).strip()
+    await send_technical_analysis(update.message.chat_id, symbol, context)
+
+
+async def send_technical_analysis(chat_id: int, symbol: str, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Send technical analysis breakdown."""
+    loading = await context.bot.send_message(chat_id=chat_id, text=f"📊 Calculating technicals for *{symbol}*...", parse_mode=ParseMode.MARKDOWN)
+
+    ta = stock_service.get_technical_analysis(symbol)
+    if not ta:
+        await loading.edit_text(f"❌ Could not calculate technicals for *{symbol}*.", parse_mode=ParseMode.MARKDOWN)
+        return
+
+    sma50_str = f"`{ta['sma50']} {ta['currency']}`" if ta['sma50'] else "`N/A`"
+    sma200_str = f"`{ta['sma200']} {ta['currency']}`" if ta['sma200'] else "`N/A`"
+
+    text = (
+        f"📊 *Technical Analysis: {ta['name']}* (`{ta['symbol']}`)\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"💰 *Current Price:* `{ta['price']} {ta['currency']}`\n"
+        f"⚡ *Signal:* {ta['sentiment']}\n\n"
+        f"🔹 *RSI (14-day):* `{ta['rsi']}` — _{ta['rsi_desc']}_\n"
+        f"🔹 *50-day SMA:* {sma50_str}\n"
+        f"🔹 *200-day SMA:* {sma200_str}\n"
+        f"🔺 *52-Week High:* `{ta['high_52w']} {ta['currency']}`\n"
+        f"🔻 *52-Week Low:* `{ta['low_52w']} {ta['currency']}`\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"_Use `/chart {ta['symbol']}` to see the price chart!_"
+    )
+
+    keyboard = [
+        [
+            InlineKeyboardButton("📊 View Chart", callback_data=f"chart_{ta['symbol']}"),
+            InlineKeyboardButton("📰 News", callback_data=f"news_{ta['symbol']}"),
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await loading.edit_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+
+
+async def news_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Fetch recent news articles for a symbol."""
+    if not context.args:
+        await update.message.reply_text(
+            "⚠️ Usage: `/news <SYMBOL>`\nExample: `/news RELIANCE` or `/news TSLA`",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    symbol = " ".join(context.args).strip()
+    await send_news(update.message.chat_id, symbol, context)
+
+
+async def send_news(chat_id: int, symbol: str, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Send top market news."""
+    loading = await context.bot.send_message(chat_id=chat_id, text=f"📰 Fetching headlines for *{symbol}*...", parse_mode=ParseMode.MARKDOWN)
+
+    articles = stock_service.get_stock_news(symbol)
+    if not articles:
+        await loading.edit_text(f"❌ No recent news found for *{symbol}*.", parse_mode=ParseMode.MARKDOWN)
+        return
+
+    text = f"📰 *Recent Headlines for {symbol.upper()}:*\n━━━━━━━━━━━━━━━━━━━\n\n"
+    for idx, a in enumerate(articles, 1):
+        text += f"{idx}. [{a['title']}]({a['url']})\n   _Source: {a['publisher']}_\n\n"
+
+    await loading.edit_text(text, parse_mode=ParseMode.MARKDOWN, disable_web_page_preview=True)
+
+
+# ---------------------------------------------------------
+# Watchlist Commands
+# ---------------------------------------------------------
+
+async def watchlist_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Display user's personal watchlist with live prices."""
+    user = update.effective_user
+    chat_id = update.effective_chat.id
+    symbols = database.get_user_watchlist(user.id)
+
+    if not symbols:
+        text = (
+            "⭐ *Your Watchlist is empty!*\n\n"
+            "Add stocks to track them daily:\n"
+            "`/addwatch <SYMBOL>`\n"
+            "Example: `/addwatch NIFTY 50`\n"
+            "Example: `/addwatch RELIANCE`\n"
+            "Example: `/addwatch AAPL`"
+        )
+        if update.message:
+            await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+        elif update.callback_query:
+            await update.callback_query.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+        return
+
+    loading = await context.bot.send_message(chat_id=chat_id, text="⭐ Loading your watchlist...", parse_mode=ParseMode.MARKDOWN)
+
+    board_text = f"⭐ *Your Watchlist ({len(symbols)}):*\n━━━━━━━━━━━━━━━━━━━\n"
+    keyboard = []
+
+    for sym in symbols:
+        q = stock_service.get_stock_quote(sym)
+        if q:
+            sign = "+" if q["change"] >= 0 else ""
+            icon = "🟢" if q["change"] >= 0 else "🔴"
+            board_text += (
+                f"{icon} *{q['name']}* (`{q['symbol']}`)\n"
+                f"   💰 `{q['price']} {q['currency']}` | `{sign}{q['change_pct']}%`\n"
+            )
+            keyboard.append([
+                InlineKeyboardButton(f"🔍 {q['symbol']}", callback_data=f"price_{q['symbol']}"),
+                InlineKeyboardButton(f"❌ Remove", callback_data=f"delwatch_{q['symbol']}"),
+            ])
+        else:
+            board_text += f"• `{sym}` — _Price unavailable_\n"
+
+    board_text += "━━━━━━━━━━━━━━━━━━━\n_Add more with `/addwatch <SYMBOL>`_"
+    reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
+
+    await loading.edit_text(board_text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+
+
+async def addwatch_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Add a symbol to user's watchlist."""
+    user = update.effective_user
+    if not context.args:
+        await update.message.reply_text("⚠️ Usage: `/addwatch <SYMBOL>`\nExample: `/addwatch TCS`", parse_mode=ParseMode.MARKDOWN)
+        return
+
+    raw_symbol = " ".join(context.args).strip()
+    quote = stock_service.get_stock_quote(raw_symbol)
+    if not quote:
+        await update.message.reply_text(f"❌ Symbol *{raw_symbol}* not found.", parse_mode=ParseMode.MARKDOWN)
+        return
+
+    success = database.add_to_watchlist(user.id, quote["symbol"])
+    if success:
+        await update.message.reply_text(
+            f"✅ Added *{quote['name']}* (`{quote['symbol']}`) to your watchlist!\n"
+            f"Type `/watchlist` to view it.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+    else:
+        await update.message.reply_text(f"ℹ️ *{quote['symbol']}* is already in your watchlist.", parse_mode=ParseMode.MARKDOWN)
+
+
+async def delwatch_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Remove a symbol from user's watchlist."""
+    user = update.effective_user
+    if not context.args:
+        await update.message.reply_text("⚠️ Usage: `/delwatch <SYMBOL>`\nExample: `/delwatch TCS`", parse_mode=ParseMode.MARKDOWN)
+        return
+
+    raw_symbol = " ".join(context.args).strip().upper()
+    resolved = stock_service.resolve_symbol(raw_symbol)
+
+    success = database.remove_from_watchlist(user.id, resolved) or database.remove_from_watchlist(user.id, raw_symbol)
+    if success:
+        await update.message.reply_text(f"🗑️ Removed *{raw_symbol}* from your watchlist.", parse_mode=ParseMode.MARKDOWN)
+    else:
+        await update.message.reply_text(f"❌ *{raw_symbol}* was not found in your watchlist.", parse_mode=ParseMode.MARKDOWN)
+
+
 # ---------------------------------------------------------
 # Callback Query Handler (Inline Buttons)
 # ---------------------------------------------------------
@@ -402,6 +580,21 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     elif data.startswith("chart_"):
         symbol = data[len("chart_"):]
         await send_stock_chart(query.message.chat_id, symbol, "1mo", context)
+    elif data.startswith("ta_"):
+        symbol = data[len("ta_"):]
+        await send_technical_analysis(query.message.chat_id, symbol, context)
+    elif data.startswith("news_"):
+        symbol = data[len("news_"):]
+        await send_news(query.message.chat_id, symbol, context)
+    elif data.startswith("addwatch_"):
+        symbol = data[len("addwatch_"):]
+        success = database.add_to_watchlist(query.from_user.id, symbol)
+        msg = f"⭐ Added {symbol} to watchlist!" if success else f"ℹ️ {symbol} is already in watchlist."
+        await query.message.reply_text(msg)
+    elif data.startswith("delwatch_"):
+        symbol = data[len("delwatch_"):]
+        database.remove_from_watchlist(query.from_user.id, symbol)
+        await query.edit_message_text(f"🗑️ Removed {symbol} from watchlist.")
     elif data.startswith("del_"):
         alert_id = int(data.split("_")[1])
         success = database.delete_alert(alert_id, user_id=query.from_user.id)
@@ -411,6 +604,8 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             await query.edit_message_text(f"❌ Alert `#{alert_id}` was already removed.", parse_mode=ParseMode.MARKDOWN)
     elif data == "list_alerts":
         await list_alerts_command(update, context)
+    elif data == "view_watchlist":
+        await watchlist_command(update, context)
     elif data == "help_menu":
         await help_command(update, context)
     elif data == "clear_all":
@@ -423,15 +618,11 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 # ---------------------------------------------------------
 
 async def check_price_alerts_job(context: ContextTypes.DEFAULT_TYPE) -> None:
-    """
-    Background job that polls active alerts against live market prices.
-    Dispatches notifications when targets are triggered.
-    """
+    """Background job that polls active alerts against live market prices."""
     alerts = database.get_all_active_alerts()
     if not alerts:
         return
 
-    # Collect distinct symbols to minimize API requests
     distinct_symbols = list({a["symbol"] for a in alerts})
     quotes: Dict[str, Any] = {}
 
@@ -505,14 +696,12 @@ def main() -> None:
         print("❌ Error: TELEGRAM_BOT_TOKEN is not set in .env file!")
         return
 
-    # Initialize SQLite database
     database.init_db()
     logger.info("Database initialized successfully.")
 
-    # Build Application
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # Register Command Handlers
+    # Commands
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("price", price_command))
@@ -523,11 +712,16 @@ def main() -> None:
     app.add_handler(CommandHandler("delalert", delalert_command))
     app.add_handler(CommandHandler("clearalerts", clearalerts_command))
     app.add_handler(CommandHandler("chart", chart_command))
+    app.add_handler(CommandHandler("ta", ta_command))
+    app.add_handler(CommandHandler("news", news_command))
+    app.add_handler(CommandHandler("watchlist", watchlist_command))
+    app.add_handler(CommandHandler("addwatch", addwatch_command))
+    app.add_handler(CommandHandler("delwatch", delwatch_command))
 
     # Interactive button handler
     app.add_handler(CallbackQueryHandler(callback_handler))
 
-    # Setup Background Alert Checker Job (runs every 60 seconds)
+    # Scheduler Job
     if app.job_queue:
         app.job_queue.run_repeating(check_price_alerts_job, interval=60, first=10)
         logger.info("Target price alert background job registered (60s interval).")

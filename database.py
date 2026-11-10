@@ -1,4 +1,4 @@
-"""Database management module for StockMightyBot alerts."""
+"""Database management module for StockMightyBot alerts and watchlists."""
 
 import sqlite3
 import os
@@ -15,7 +15,7 @@ def get_db_connection() -> sqlite3.Connection:
 
 
 def init_db() -> None:
-    """Initialize SQLite tables for alerts."""
+    """Initialize SQLite tables for alerts and watchlists."""
     with get_db_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
@@ -37,13 +37,31 @@ def init_db() -> None:
             """
         )
         cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS watchlist (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                symbol TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, symbol)
+            )
+            """
+        )
+        cursor.execute(
             "CREATE INDEX IF NOT EXISTS idx_alerts_active ON alerts (is_active)"
         )
         cursor.execute(
             "CREATE INDEX IF NOT EXISTS idx_alerts_user ON alerts (user_id, is_active)"
         )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_watchlist_user ON watchlist (user_id)"
+        )
         conn.commit()
 
+
+# ---------------------------------------------------------
+# Alerts Methods
+# ---------------------------------------------------------
 
 def add_alert(
     user_id: int,
@@ -145,3 +163,46 @@ def mark_alert_triggered(alert_id: int, trigger_price: float) -> None:
         )
         conn.commit()
 
+
+# ---------------------------------------------------------
+# Watchlist Methods
+# ---------------------------------------------------------
+
+def add_to_watchlist(user_id: int, symbol: str) -> bool:
+    """Add a symbol to user's watchlist."""
+    symbol = symbol.strip().upper()
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                "INSERT INTO watchlist (user_id, symbol) VALUES (?, ?)",
+                (user_id, symbol),
+            )
+            conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False  # Already in watchlist
+
+
+def get_user_watchlist(user_id: int) -> List[str]:
+    """Get all symbols in user's watchlist."""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT symbol FROM watchlist WHERE user_id = ? ORDER BY created_at ASC",
+            (user_id,),
+        )
+        return [row["symbol"] for row in cursor.fetchall()]
+
+
+def remove_from_watchlist(user_id: int, symbol: str) -> bool:
+    """Remove a symbol from user's watchlist."""
+    symbol = symbol.strip().upper()
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "DELETE FROM watchlist WHERE user_id = ? AND symbol = ?",
+            (user_id, symbol),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
