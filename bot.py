@@ -141,7 +141,12 @@ async def track_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     product = product_service.fetch_product(url)
     if not product:
         await loading_msg.edit_text(
-            "❌ Could not extract product details. Please ensure the link is a valid Amazon or Flipkart product page."
+            "❌ Could not extract details from this link.\n\n"
+            "⚠️ *Common reasons:*\n"
+            "• The item is currently **out of stock** or unavailable.\n"
+            "• The link is a search results page rather than an individual product page.\n"
+            "• Make sure you copy the link directly from the product page.",
+            parse_mode=ParseMode.MARKDOWN,
         )
         return
 
@@ -295,15 +300,22 @@ async def handle_url_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if not update.message or not update.message.text:
         return
 
-    text = update.message.text.strip()
-    platform = product_service.detect_platform(text)
+    raw_text = update.message.text.strip()
+    platform = product_service.detect_platform(raw_text)
     if platform == "Unknown":
         return
 
     loading = await update.message.reply_text(f"🔎 {platform} link detected! Fetching current price and details...")
-    product = product_service.fetch_product(text)
+    product = product_service.fetch_product(raw_text)
     if not product:
-        await loading.edit_text(f"❌ Could not extract details from this {platform} link. Please check if the page is active.")
+        await loading.edit_text(
+            f"❌ Could not extract details from this {platform} link.\n\n"
+            "⚠️ *Please check:*\n"
+            "1. Is the product currently **in stock**?\n"
+            "2. Did you share an individual product link (not a search or category list)?\n"
+            "3. Try sending the link with `/track <LINK> <TARGET_PRICE>`",
+            parse_mode=ParseMode.MARKDOWN,
+        )
         return
 
     curr_price = product["price"]
@@ -435,7 +447,6 @@ async def check_prices_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 
     logger.info(f"Checking prices for {len(products)} active tracked product(s)...")
 
-    # Group by URL to avoid duplicate scraping
     url_map: Dict[str, list] = {}
     for p in products:
         url_map.setdefault(p["url"], []).append(p)
@@ -459,10 +470,8 @@ async def check_prices_job(context: ContextTypes.DEFAULT_TYPE) -> None:
             platform = prod_data["platform"]
             badge = prod_data.get("platform_badge", platform)
 
-            # Update latest price in DB
             database.update_product_price(product_id, new_price)
 
-            # Check if Price Drop Target Reached
             if new_price <= target_price:
                 database.mark_product_triggered(product_id, new_price)
                 logger.info(f"Price Drop Triggered: #{product_id} on {platform} at {new_price} (Target: {target_price})")
@@ -516,11 +525,9 @@ def main() -> None:
         print("❌ Error: TELEGRAM_BOT_TOKEN is not set in .env file!")
         return
 
-    # Initialize SQLite database
     database.init_db()
     logger.info("Price Tracker Database initialized successfully.")
 
-    # Build Application
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     # Commands
