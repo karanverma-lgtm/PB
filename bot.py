@@ -1,7 +1,7 @@
-"""Amazon & Flipkart Price Drop Tracker Telegram Bot (@Stockmightybot).
+"""Multi-Platform Price Drop Tracker Telegram Bot (@Stockmightybot).
 
-Monitors Amazon and Flipkart product prices and delivers automated alerts whenever
-a product's price drops to or below your desired target price.
+Monitors Amazon, Flipkart, JioMart, Reliance Digital, Croma, and Samsung product prices
+and delivers automated alerts whenever a product's price drops to or below your desired target price.
 """
 
 import os
@@ -64,13 +64,17 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     text = (
         f"👋 *Welcome to Price Drop Alert Bot, {name}!*\n\n"
-        "🛍️ Never miss a deal! Send me any **Amazon or Flipkart link**, set your desired target price, "
+        "🛍️ Never miss a deal! Send me any product link from **6 major platforms**, set your desired target price, "
         "and I will notify you the moment the price drops!\n\n"
         "⚡ *Supported Platforms:*\n"
         "• 📦 **Amazon India & Global** (`amazon.in`, `amzn.to`, `amazon.com`)\n"
-        "• 🛍️ **Flipkart** (`flipkart.com`, `dl.flipkart.com`)\n\n"
+        "• 🛍️ **Flipkart** (`flipkart.com`, `dl.flipkart.com`)\n"
+        "• 🟢 **JioMart** (`jiomart.com`)\n"
+        "• 🔴 **Reliance Digital** (`reliancedigital.in`)\n"
+        "• ⚪ **Croma** (`croma.com`)\n"
+        "• 🌌 **Samsung India** (`samsung.com/in`)\n\n"
         "⚡ *How to use:*\n"
-        "1. Simply **paste or share any Amazon or Flipkart product link** into this chat.\n"
+        "1. Simply **paste or share any product link** into this chat.\n"
         "2. Choose a quick discount button (5%, 10%, 15% drop) or set your own target!\n\n"
         "📋 *Commands:*\n"
         "• `/track <URL> <DESIRED_PRICE>` — Track product with target price\n"
@@ -97,12 +101,17 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "📚 *Price Drop Tracker Guide*\n\n"
         "🛒 *Tracking an Item:*\n"
         "**Method 1 (Fastest):**\n"
-        "Just copy any product link from the Amazon or Flipkart App / website and paste it into this chat! "
+        "Just copy any product link from Amazon, Flipkart, JioMart, Reliance Digital, Croma, or Samsung and paste it into this chat! "
         "The bot will automatically fetch the item and let you pick your target price.\n\n"
         "**Method 2 (Command):**\n"
-        "`/track <PRODUCT_LINK> <DESIRED_PRICE>`\n"
-        "• `/track https://www.flipkart.com/apple-iphone-15-black-128-gb/p/itm6ac6485515ae4 55000`\n"
-        "• `/track https://www.amazon.in/dp/B09G9BL5CP 75000`\n\n"
+        "`/track <PRODUCT_LINK> <DESIRED_PRICE>`\n\n"
+        "⚡ *Examples across platforms:*\n"
+        "• `/track https://www.amazon.in/dp/B09G9BL5CP 75000`\n"
+        "• `/track https://www.flipkart.com/... 55000`\n"
+        "• `/track https://www.croma.com/.../p/300652 56000`\n"
+        "• `/track https://www.reliancedigital.in/.../p/493839309 56000`\n"
+        "• `/track https://www.jiomart.com/... 56000`\n"
+        "• `/track https://www.samsung.com/in/... 75000`\n\n"
         "📋 *Managing Your Products:*\n"
         "• `/products` or `/alerts` — See all your tracked items\n"
         "• `/deltrack <ID>` — Delete a tracked item\n"
@@ -239,11 +248,20 @@ async def list_products_command(update: Update, context: ContextTypes.DEFAULT_TY
     text = f"📋 *Your Tracked Products ({len(products)}):*\n━━━━━━━━━━━━━━━━━━━\n\n"
     keyboard = []
 
+    icons = {
+        "Amazon": "📦",
+        "Flipkart": "🛍️",
+        "JioMart": "🟢",
+        "RelianceDigital": "🔴",
+        "Croma": "⚪",
+        "Samsung": "🌌",
+    }
+
     for p in products:
         savings = p["current_price"] - p["target_price"]
         curr_str = f"{p['currency']}{p['current_price']:,.2f}"
         target_str = f"{p['currency']}{p['target_price']:,.2f}"
-        platform_icon = "🛍️" if p.get("platform") == "Flipkart" else "📦"
+        platform_icon = icons.get(p.get("platform"), "🏷️")
 
         text += (
             f"• *ID `#{p['id']}`:* {platform_icon} [{p['title'][:38]}...]({p['url']})\n"
@@ -544,7 +562,7 @@ def main() -> None:
     # Interactive button handler
     app.add_handler(CallbackQueryHandler(callback_handler))
 
-    # Direct message handler (Auto-detects when an Amazon or Flipkart link is pasted)
+    # Direct message handler (Auto-detects when a product link is pasted)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url_message))
 
     # Background Job: Polls prices every 5 minutes (300 seconds)
@@ -552,10 +570,10 @@ def main() -> None:
         app.job_queue.run_repeating(check_prices_job, interval=300, first=15)
         logger.info("Price drop background job registered (300s interval).")
 
-    print("\n" + "=" * 55)
-    print("🛍️ Amazon & Flipkart Price Drop Bot (@Stockmightybot) Live!")
-    print("=" * 55)
-    print("Monitoring Amazon & Flipkart and listening for link inputs...\n")
+    print("\n" + "=" * 65)
+    print("🛍️ Multi-Platform Price Drop Bot (@Stockmightybot) Live!")
+    print("=" * 65)
+    print("Monitoring Amazon, Flipkart, JioMart, Reliance Digital, Croma & Samsung...\n")
 
     app.run_polling(drop_pending_updates=True)
 

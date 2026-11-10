@@ -1,12 +1,21 @@
-"""Product Scraping & Price Extraction Service for Amazon & Flipkart.
+"""Product Scraping & Price Extraction Service for Indian & Global E-Commerce.
 
-Uses curl_cffi for realistic browser TLS fingerprinting to reliably extract
-product title, current price, image, and platform from Amazon and Flipkart.
+Supports 6 major platforms:
+1. Amazon (amazon.in, amazon.com, amzn.to, amzn.in)
+2. Flipkart (flipkart.com, dl.flipkart.com)
+3. JioMart (jiomart.com)
+4. Reliance Digital (reliancedigital.in)
+5. Croma (croma.com)
+6. Samsung India (samsung.com/in)
+
+Uses curl_cffi for browser TLS fingerprinting to reliably extract product title,
+current price, image, item ID, and platform without getting blocked.
 """
 
+import json
 import re
 import logging
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any
 from curl_cffi import requests
 from bs4 import BeautifulSoup
 
@@ -37,8 +46,16 @@ def clean_url_from_text(raw_text: str) -> str:
 
 
 def detect_platform(url_or_text: str) -> str:
-    """Detect whether a link is from Amazon or Flipkart."""
+    """Detect whether a link is from Amazon, Flipkart, JioMart, Reliance Digital, Croma, or Samsung."""
     text = url_or_text.lower().strip()
+    if "reliancedigital.in" in text:
+        return "RelianceDigital"
+    if "croma.com" in text:
+        return "Croma"
+    if "jiomart.com" in text:
+        return "JioMart"
+    if "samsung.com" in text:
+        return "Samsung"
     if "flipkart.com" in text or "dl.flipkart.com" in text:
         return "Flipkart"
     if "amazon." in text or "amzn." in text or re.match(r"^[A-Z0-9]{10}$", url_or_text.strip()):
@@ -46,9 +63,9 @@ def detect_platform(url_or_text: str) -> str:
     return "Unknown"
 
 
-# ---------------------------------------------------------
-# Amazon Scraper
-# ---------------------------------------------------------
+# =====================================================================
+# 1. Amazon Scraper
+# =====================================================================
 
 def extract_amazon_asin(text: str) -> Optional[str]:
     """Extract 10-character Amazon Standard Identification Number (ASIN)."""
@@ -75,7 +92,6 @@ def fetch_amazon_product(url_or_asin: str) -> Optional[Dict[str, Any]]:
     """Fetch live product details from Amazon."""
     clean_target = clean_url_from_text(url_or_asin)
     try:
-        # Resolve short URL if needed (amzn.in or amzn.to)
         if "amzn.to" in clean_target or "amzn.in" in clean_target:
             try:
                 head_res = requests.get(
@@ -103,7 +119,6 @@ def fetch_amazon_product(url_or_asin: str) -> Optional[Dict[str, Any]]:
             logger.error(f"Amazon HTTP {res.status_code} for {canonical_url}")
             return None
 
-        # Check for CAPTCHA block
         if "api-services-support@amazon.com" in res.text or "validateCaptcha" in res.text:
             logger.warning(f"Amazon CAPTCHA detected for {canonical_url}")
             return None
@@ -157,11 +172,11 @@ def fetch_amazon_product(url_or_asin: str) -> Optional[Dict[str, Any]]:
                         price = float(match.group(0).replace(",", ""))
                         break
 
-        # 3. Regex search for ₹ on page if still None
+        # 3. Regex search for currency on page if still None
         if price is None:
             price_div = soup.find("div", id=re.compile(r"corePrice|apex_desktop|desktop_unifiedPrice|buybox"))
             if price_div:
-                matches = re.findall(r"₹\s*([\d,]+(?:\.\d+)?)", price_div.get_text())
+                matches = re.findall(r"[₹\$]\s*([\d,]+(?:\.\d+)?)", price_div.get_text())
                 if matches:
                     price = float(matches[0].replace(",", ""))
 
@@ -191,9 +206,9 @@ def fetch_amazon_product(url_or_asin: str) -> Optional[Dict[str, Any]]:
         return None
 
 
-# ---------------------------------------------------------
-# Flipkart Scraper
-# ---------------------------------------------------------
+# =====================================================================
+# 2. Flipkart Scraper
+# =====================================================================
 
 def extract_flipkart_id(url: str) -> str:
     """Extract unique product identifier or clean URL for Flipkart."""
@@ -277,17 +292,368 @@ def fetch_flipkart_product(url: str) -> Optional[Dict[str, Any]]:
         return None
 
 
-# ---------------------------------------------------------
+# =====================================================================
+# 3. JioMart Scraper
+# =====================================================================
+
+def fetch_jiomart_product(url: str) -> Optional[Dict[str, Any]]:
+    """Fetch live product details from JioMart."""
+    clean_target = clean_url_from_text(url)
+    try:
+        res = requests.get(clean_target, impersonate="chrome120", headers=HEADERS, allow_redirects=True, timeout=20)
+        if res.status_code != 200:
+            logger.error(f"JioMart HTTP {res.status_code} for {clean_target}")
+            return None
+
+        soup = BeautifulSoup(res.text, "html.parser")
+        title, price, img_url, item_id = None, None, None, None
+
+        # 1. Check JSON-LD Product schema
+        for s in soup.find_all("script", type="application/ld+json"):
+            try:
+                d = json.loads(s.string)
+                if isinstance(d, dict) and d.get("@type") == "Product":
+                    if not title and d.get("name"):
+                        title = d.get("name")
+                    if not img_url and d.get("image"):
+                        img = d.get("image")
+                        img_url = img[0] if isinstance(img, list) else img
+            except Exception:
+                pass
+
+        # 2. Check window.APP_DATA Redux state
+        idx = res.text.find("window.APP_DATA")
+        if idx != -1:
+            brace_start = res.text.find("{", idx)
+            depth = 0
+            json_str = None
+            for i in range(brace_start, len(res.text)):
+                if res.text[i] == "{":
+                    depth += 1
+                elif res.text[i] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        json_str = res.text[brace_start:i+1]
+                        break
+            if json_str:
+                cleaned = re.sub(r':\s*undefined\b', ':null', json_str)
+                try:
+                    data = json.loads(cleaned)
+                    pd = data.get("reduxData", {}).get("catalog", {}).get("product_details", {})
+                    if not title and pd.get("name"):
+                        title = pd.get("name")
+                    if not item_id and pd.get("item_code"):
+                        item_id = str(pd.get("item_code"))
+                    if not img_url and pd.get("medias"):
+                        img_url = pd["medias"][0].get("url")
+                except Exception:
+                    pass
+
+        # 3. Extract Price: look for price-rrp (selling price) or price-mrp
+        rrp_match = re.search(r'"price-rrp"\s*:\s*"(\d+(?:\.\d+)?)"', res.text)
+        if rrp_match:
+            price = float(rrp_match.group(1))
+        else:
+            mrp_match = re.search(r'"price-mrp"\s*:\s*"(\d+(?:\.\d+)?)"', res.text)
+            if mrp_match:
+                price = float(mrp_match.group(1))
+
+        # Fallback Title from HTML
+        if not title:
+            if soup.title and soup.title.string:
+                title = soup.title.string.replace("Online at Best Prices in India - JioMart", "").replace("Buy ", "").strip()
+            og_t = soup.find("meta", property="og:title")
+            if og_t:
+                title = og_t.get("content", "").strip()
+
+        # Fallback item ID from URL
+        if not item_id:
+            m = re.search(r"-(\d+)(?:[/?]|$)", clean_target) or re.search(r"/(\d+)(?:[/?]|$)", clean_target)
+            item_id = m.group(1) if m else "JIOMART_ITEM"
+
+        if not title or price is None:
+            logger.warning(f"Could not extract JioMart title or price for {clean_target}")
+            return None
+
+        return {
+            "platform": "JioMart",
+            "platform_badge": "🟢 JioMart",
+            "item_id": item_id,
+            "title": title,
+            "price": round(price, 2),
+            "currency": "₹",
+            "url": res.url,
+            "image_url": img_url,
+        }
+    except Exception as e:
+        logger.error(f"Error scraping JioMart: {e}")
+        return None
+
+
+# =====================================================================
+# 4. Reliance Digital Scraper
+# =====================================================================
+
+def fetch_reliancedigital_product(url: str) -> Optional[Dict[str, Any]]:
+    """Fetch live product details from Reliance Digital."""
+    clean_target = clean_url_from_text(url)
+    try:
+        res = requests.get(clean_target, impersonate="chrome120", headers=HEADERS, allow_redirects=True, timeout=20)
+        if res.status_code != 200:
+            logger.error(f"Reliance Digital HTTP {res.status_code} for {clean_target}")
+            return None
+
+        title, price, img_url, item_id = None, None, None, None
+
+        idx = res.text.find("window.__INITIAL_STATE__")
+        if idx != -1:
+            brace_start = res.text.find("{", idx)
+            depth = 0
+            state_str = None
+            for j in range(brace_start, len(res.text)):
+                if res.text[j] == "{":
+                    depth += 1
+                elif res.text[j] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        state_str = res.text[brace_start:j+1]
+                        break
+            if state_str:
+                cleaned = re.sub(r':\s*undefined\b', ':null', state_str)
+                state = json.loads(cleaned)
+                pdp = state.get("productDetailsPage", {})
+                prod = pdp.get("product", {})
+                title = prod.get("name")
+                item_id = str(prod.get("item_code", ""))
+                if prod.get("medias"):
+                    img_url = prod["medias"][0].get("url")
+
+                meta_price = pdp.get("product_meta", {}).get("price", {})
+                if meta_price:
+                    eff = meta_price.get("effective", {}) or meta_price.get("selling", {}) or meta_price.get("marked", {})
+                    if eff and "min" in eff:
+                        price = float(eff["min"])
+
+        # Fallbacks
+        if not item_id:
+            m = re.search(r"/p/(\d+)", clean_target)
+            item_id = m.group(1) if m else "RD_ITEM"
+
+        if not title:
+            soup = BeautifulSoup(res.text, "html.parser")
+            if soup.title and "Reliance Digital" in soup.title.string:
+                title = soup.title.string.split("-")[0].strip()
+
+        if not title or price is None:
+            logger.warning(f"Could not extract Reliance Digital details for {clean_target}")
+            return None
+
+        return {
+            "platform": "RelianceDigital",
+            "platform_badge": "🔴 Reliance Digital",
+            "item_id": item_id,
+            "title": title,
+            "price": round(price, 2),
+            "currency": "₹",
+            "url": res.url,
+            "image_url": img_url,
+        }
+    except Exception as e:
+        logger.error(f"Error scraping Reliance Digital: {e}")
+        return None
+
+
+# =====================================================================
+# 5. Croma Scraper
+# =====================================================================
+
+def fetch_croma_product(url: str) -> Optional[Dict[str, Any]]:
+    """Fetch live product details from Croma."""
+    clean_target = clean_url_from_text(url)
+    try:
+        res = requests.get(clean_target, impersonate="chrome120", headers=HEADERS, allow_redirects=True, timeout=20)
+        if res.status_code != 200:
+            logger.error(f"Croma HTTP {res.status_code} for {clean_target}")
+            return None
+
+        title, price, img_url, item_id = None, None, None, None
+
+        idx = res.text.find("window.__INITIAL_DATA__=")
+        if idx != -1:
+            brace_start = res.text.find("{", idx)
+            depth = 0
+            json_str = None
+            for i in range(brace_start, len(res.text)):
+                if res.text[i] == "{":
+                    depth += 1
+                elif res.text[i] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        json_str = res.text[brace_start:i+1]
+                        break
+            if json_str:
+                cleaned = re.sub(r':\s*undefined\b', ':null', json_str)
+                d = json.loads(cleaned)
+                pdp = d.get("pdpReducer", {}).get("pdpData", {})
+                title = pdp.get("name")
+                item_id = str(pdp.get("code", ""))
+                images = pdp.get("imageInfo", [])
+                if images:
+                    img_url = images[0].get("url")
+
+                price_data = d.get("pdpPriceReducer", {}).get("pdpPriceData", {})
+                sp = price_data.get("sellingPrice", {}).get("value") or price_data.get("mrp", {}).get("value")
+                if sp:
+                    price = float(sp)
+
+        if not item_id:
+            m = re.search(r"/p/(\d+)", clean_target)
+            item_id = m.group(1) if m else "CROMA_ITEM"
+
+        if not title or price is None:
+            logger.warning(f"Could not extract Croma details for {clean_target}")
+            return None
+
+        return {
+            "platform": "Croma",
+            "platform_badge": "⚪ Croma",
+            "item_id": item_id,
+            "title": title,
+            "price": round(price, 2),
+            "currency": "₹",
+            "url": res.url,
+            "image_url": img_url,
+        }
+    except Exception as e:
+        logger.error(f"Error scraping Croma: {e}")
+        return None
+
+
+# =====================================================================
+# 6. Samsung India Scraper
+# =====================================================================
+
+def fetch_samsung_product(url: str) -> Optional[Dict[str, Any]]:
+    """Fetch live product details from Samsung India."""
+    clean_target = clean_url_from_text(url)
+    try:
+        res = requests.get(clean_target, impersonate="chrome120", headers=HEADERS, allow_redirects=True, timeout=20)
+        if res.status_code != 200:
+            logger.error(f"Samsung HTTP {res.status_code} for {clean_target}")
+            return None
+
+        soup = BeautifulSoup(res.text, "html.parser")
+        title, price, img_url, item_id = None, None, None, None
+
+        # Check JSON-LD
+        for s in soup.find_all("script", type="application/ld+json"):
+            try:
+                data = json.loads(s.string)
+                items = data if isinstance(data, list) else [data]
+                for item in items:
+                    t = item.get("@type")
+                    if t == "Product":
+                        if not title:
+                            title = item.get("name")
+                        if not img_url:
+                            img = item.get("image")
+                            img_url = img[0] if isinstance(img, list) else img
+                        if not price and "offers" in item:
+                            offers = item.get("offers", {})
+                            p_val = offers.get("price")
+                            if p_val:
+                                price = float(str(p_val).replace(",", ""))
+                    elif t == "ProductGroup":
+                        if not title:
+                            title = item.get("name")
+                        variants = item.get("hasVariant", [])
+                        if variants:
+                            v0 = variants[0]
+                            if not img_url:
+                                img = v0.get("image")
+                                if img and img.startswith("//"):
+                                    img = "https:" + img
+                                img_url = img
+                            if not item_id:
+                                item_id = v0.get("sku")
+            except Exception:
+                pass
+
+        # Fallback price from regex if not in JSON-LD
+        if price is None:
+            m = re.findall(r"₹\s*([\d,]+)", res.text)
+            if m:
+                for cand in m:
+                    val = float(cand.replace(",", ""))
+                    if val > 500:
+                        price = val
+                        break
+
+        # Fallback item_id from URL
+        if not item_id:
+            m = re.search(r"sm-[a-z0-9]+", clean_target, re.IGNORECASE)
+            if m:
+                item_id = m.group(0).upper()
+            else:
+                parts = [p for p in clean_target.rstrip("/").split("/") if p]
+                item_id = parts[-1] if parts else "SAMSUNG_ITEM"
+
+        # Fallback title
+        if not title:
+            if soup.title and soup.title.string:
+                title = soup.title.string.split("|")[0].replace("Buy", "").strip()
+
+        if not title or price is None:
+            logger.warning(f"Could not extract Samsung details for {clean_target}")
+            return None
+
+        return {
+            "platform": "Samsung",
+            "platform_badge": "🌌 Samsung",
+            "item_id": item_id,
+            "title": title,
+            "price": round(price, 2),
+            "currency": "₹",
+            "url": res.url,
+            "image_url": img_url,
+        }
+    except Exception as e:
+        logger.error(f"Error scraping Samsung: {e}")
+        return None
+
+
+# =====================================================================
 # Unified Fetcher
-# ---------------------------------------------------------
+# =====================================================================
 
 def fetch_product(url_or_text: str) -> Optional[Dict[str, Any]]:
-    """Automatically detect platform and fetch product details."""
+    """Automatically detect platform and fetch live product details."""
     clean_target = clean_url_from_text(url_or_text)
     platform = detect_platform(clean_target)
-    if platform == "Flipkart":
+
+    if platform == "RelianceDigital":
+        return fetch_reliancedigital_product(clean_target)
+    elif platform == "Croma":
+        return fetch_croma_product(clean_target)
+    elif platform == "JioMart":
+        return fetch_jiomart_product(clean_target)
+    elif platform == "Samsung":
+        return fetch_samsung_product(clean_target)
+    elif platform == "Flipkart":
         return fetch_flipkart_product(clean_target)
     elif platform == "Amazon":
         return fetch_amazon_product(clean_target)
     else:
-        return fetch_amazon_product(clean_target) or fetch_flipkart_product(clean_target)
+        # Fallback cascade across supported platforms
+        for fetcher in [
+            fetch_amazon_product,
+            fetch_flipkart_product,
+            fetch_jiomart_product,
+            fetch_reliancedigital_product,
+            fetch_croma_product,
+            fetch_samsung_product,
+        ]:
+            res = fetcher(clean_target)
+            if res:
+                return res
+        return None
