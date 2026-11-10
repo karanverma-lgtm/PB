@@ -1,4 +1,4 @@
-"""Database management module for Amazon Price Drop Tracker Bot."""
+"""Database management module for Amazon & Flipkart Price Drop Tracker."""
 
 import sqlite3
 import os
@@ -15,7 +15,7 @@ def get_db_connection() -> sqlite3.Connection:
 
 
 def init_db() -> None:
-    """Initialize SQLite tables for Amazon product tracking."""
+    """Initialize SQLite tables for tracked products."""
     with get_db_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
@@ -24,7 +24,8 @@ def init_db() -> None:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
                 chat_id INTEGER NOT NULL,
-                asin TEXT NOT NULL,
+                platform TEXT DEFAULT 'Amazon', -- 'Amazon' or 'Flipkart'
+                item_id TEXT NOT NULL,
                 title TEXT NOT NULL,
                 url TEXT NOT NULL,
                 image_url TEXT,
@@ -39,6 +40,12 @@ def init_db() -> None:
             )
             """
         )
+        # Attempt to add platform column if upgrading from earlier schema
+        try:
+            cursor.execute("ALTER TABLE tracked_products ADD COLUMN platform TEXT DEFAULT 'Amazon'")
+        except sqlite3.OperationalError:
+            pass  # Already exists
+
         cursor.execute(
             "CREATE INDEX IF NOT EXISTS idx_products_active ON tracked_products (is_active)"
         )
@@ -51,7 +58,8 @@ def init_db() -> None:
 def add_tracked_product(
     user_id: int,
     chat_id: int,
-    asin: str,
+    platform: str,
+    item_id: str,
     title: str,
     url: str,
     image_url: Optional[str],
@@ -65,15 +73,16 @@ def add_tracked_product(
         cursor.execute(
             """
             INSERT INTO tracked_products (
-                user_id, chat_id, asin, title, url, image_url,
+                user_id, chat_id, platform, item_id, title, url, image_url,
                 target_price, initial_price, current_price, currency, is_active
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
             """,
             (
                 user_id,
                 chat_id,
-                asin,
+                platform,
+                item_id,
                 title,
                 url,
                 image_url,
@@ -93,7 +102,7 @@ def get_user_products(user_id: int) -> List[Dict[str, Any]]:
         cursor = conn.cursor()
         cursor.execute(
             """
-            SELECT id, user_id, chat_id, asin, title, url, image_url,
+            SELECT id, user_id, chat_id, platform, item_id, title, url, image_url,
                    target_price, initial_price, current_price, currency, created_at
             FROM tracked_products
             WHERE user_id = ? AND is_active = 1
@@ -110,7 +119,7 @@ def get_all_active_products() -> List[Dict[str, Any]]:
         cursor = conn.cursor()
         cursor.execute(
             """
-            SELECT id, user_id, chat_id, asin, title, url, image_url,
+            SELECT id, user_id, chat_id, platform, item_id, title, url, image_url,
                    target_price, initial_price, current_price, currency
             FROM tracked_products
             WHERE is_active = 1

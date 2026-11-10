@@ -1,7 +1,7 @@
-"""Amazon Price Drop Tracker Telegram Bot (@Stockmightybot).
+"""Amazon & Flipkart Price Drop Tracker Telegram Bot (@Stockmightybot).
 
-Monitors Amazon product prices and delivers automated alerts whenever a product's
-price drops to or below your desired target price.
+Monitors Amazon and Flipkart product prices and delivers automated alerts whenever
+a product's price drops to or below your desired target price.
 """
 
 import os
@@ -26,7 +26,7 @@ from telegram.ext import (
 )
 
 import database
-import amazon_service
+import product_service
 
 # Load environment variables
 load_dotenv()
@@ -37,7 +37,7 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
-logger = logging.getLogger("AmazonTrackerBot")
+logger = logging.getLogger("PriceTrackerBot")
 
 
 # ---------------------------------------------------------
@@ -58,25 +58,26 @@ def clean_price_input(price_str: str) -> float:
 # ---------------------------------------------------------
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Send welcome message and guide the user on how to track Amazon products."""
+    """Send welcome message and guide the user on how to track products."""
     user = update.effective_user
     name = user.first_name if user else "Shopper"
 
     text = (
-        f"👋 *Welcome to Amazon Price Drop Alert Bot, {name}!*\n\n"
-        "🛍️ Never overpay again! Send me any **Amazon product link**, set your desired target price, "
+        f"👋 *Welcome to Price Drop Alert Bot, {name}!*\n\n"
+        "🛍️ Never miss a deal! Send me any **Amazon or Flipkart link**, set your desired target price, "
         "and I will notify you the moment the price drops!\n\n"
+        "⚡ *Supported Platforms:*\n"
+        "• 📦 **Amazon India & Global** (`amazon.in`, `amzn.to`, `amazon.com`)\n"
+        "• 🛍️ **Flipkart** (`flipkart.com`, `dl.flipkart.com`)\n\n"
         "⚡ *How to use:*\n"
-        "1. Simply **paste or share any Amazon link** into this chat.\n"
+        "1. Simply **paste or share any Amazon or Flipkart product link** into this chat.\n"
         "2. Choose a quick discount button (5%, 10%, 15% drop) or set your own target!\n\n"
         "📋 *Commands:*\n"
         "• `/track <URL> <DESIRED_PRICE>` — Track product with target price\n"
         "• `/products` — View and manage all your tracked items\n"
         "• `/deltrack <ID>` — Stop tracking a product\n"
         "• `/cleartrack` — Clear all tracked products\n"
-        "• `/help` — Detailed guide & examples\n\n"
-        "_Example:_\n"
-        "`/track https://www.amazon.in/dp/B09G9BL5CP 75000`"
+        "• `/help` — Detailed guide & examples"
     )
 
     keyboard = [
@@ -93,22 +94,19 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send detailed help and usage guide."""
     text = (
-        "📚 *Amazon Price Tracker Guide*\n\n"
+        "📚 *Price Drop Tracker Guide*\n\n"
         "🛒 *Tracking an Item:*\n"
         "**Method 1 (Fastest):**\n"
-        "Just copy any product link from the Amazon App or browser and paste it here! "
-        "The bot will fetch the item and let you pick your target price.\n\n"
+        "Just copy any product link from the Amazon or Flipkart App / website and paste it into this chat! "
+        "The bot will automatically fetch the item and let you pick your target price.\n\n"
         "**Method 2 (Command):**\n"
-        "`/track <AMAZON_LINK> <DESIRED_PRICE>`\n"
-        "• `/track https://www.amazon.in/dp/B09G9BL5CP 75000`\n"
-        "• `/track https://amzn.to/example 1999`\n\n"
+        "`/track <PRODUCT_LINK> <DESIRED_PRICE>`\n"
+        "• `/track https://www.flipkart.com/apple-iphone-15-black-128-gb/p/itm6ac6485515ae4 55000`\n"
+        "• `/track https://www.amazon.in/dp/B09G9BL5CP 75000`\n\n"
         "📋 *Managing Your Products:*\n"
-        "• `/products` or `/alerts` — See all your tracked items with current vs target prices\n"
+        "• `/products` or `/alerts` — See all your tracked items\n"
         "• `/deltrack <ID>` — Delete a tracked item\n"
-        "• `/cleartrack` — Remove all your tracked items\n\n"
-        "🌐 *Supported Amazon Domains:*\n"
-        "• Amazon India (`amazon.in`, `amzn.in`)\n"
-        "• Amazon US & Global (`amazon.com`, `amzn.to`)"
+        "• `/cleartrack` — Remove all your tracked items"
     )
     if update.message:
         await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
@@ -117,15 +115,16 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 async def track_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Track an Amazon product at a specified target price."""
+    """Track an Amazon or Flipkart product at a specified target price."""
     user = update.effective_user
     chat_id = update.effective_chat.id
 
     if not context.args or len(context.args) < 2:
         await update.message.reply_text(
             "⚠️ *Invalid Format!*\n\n"
-            "Usage: `/track <AMAZON_URL> <DESIRED_PRICE>`\n"
-            "Example: `/track https://www.amazon.in/dp/B09G9BL5CP 75000`",
+            "Usage: `/track <PRODUCT_URL> <DESIRED_PRICE>`\n"
+            "Example: `/track https://www.flipkart.com/... 55000`\n"
+            "Example: `/track https://www.amazon.in/... 75000`",
             parse_mode=ParseMode.MARKDOWN,
         )
         return
@@ -137,17 +136,18 @@ async def track_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await update.message.reply_text(f"❌ Invalid target price: {e}")
         return
 
-    loading_msg = await update.message.reply_text("🔍 Fetching product details from Amazon... Please wait.")
+    loading_msg = await update.message.reply_text("🔍 Fetching product details... Please wait a moment.")
 
-    product = amazon_service.fetch_amazon_product(url)
+    product = product_service.fetch_product(url)
     if not product:
         await loading_msg.edit_text(
-            "❌ Could not extract product details. Please ensure the link is a valid Amazon product page."
+            "❌ Could not extract product details. Please ensure the link is a valid Amazon or Flipkart product page."
         )
         return
 
     curr_price = product["price"]
     currency = product["currency"]
+    platform = product["platform"]
 
     if target_price >= curr_price:
         await loading_msg.edit_text(
@@ -164,7 +164,8 @@ async def track_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     product_id = database.add_tracked_product(
         user_id=user.id,
         chat_id=chat_id,
-        asin=product["asin"],
+        platform=platform,
+        item_id=product["item_id"],
         title=product["title"],
         url=product["url"],
         image_url=product.get("image_url"),
@@ -176,6 +177,7 @@ async def track_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     caption = (
         f"✅ *Product Successfully Tracked!* (ID: `#{product_id}`)\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
+        f"🏷️ *Platform:* `{product['platform_badge']}`\n"
         f"📦 *{product['title'][:70]}...*\n\n"
         f"💰 *Current Price:* `{currency}{curr_price:,.2f}`\n"
         f"🎯 *Target Price:* `{currency}{target_price:,.2f}`\n"
@@ -186,7 +188,7 @@ async def track_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     keyboard = [
         [
-            InlineKeyboardButton("🛒 View on Amazon", url=product["url"]),
+            InlineKeyboardButton(f"🛒 View on {platform}", url=product["url"]),
             InlineKeyboardButton("❌ Stop Tracking", callback_data=f"del_{product_id}"),
         ],
         [
@@ -213,15 +215,15 @@ async def track_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 async def list_products_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """List all tracked Amazon products for the user."""
+    """List all tracked products for the user."""
     user = update.effective_user
     products = database.get_user_products(user.id)
 
     if not products:
         text = (
-            "📭 *You are not tracking any Amazon products yet.*\n\n"
-            "Paste any Amazon link in this chat or use:\n"
-            "`/track <AMAZON_URL> <TARGET_PRICE>`"
+            "📭 *You are not tracking any products yet.*\n\n"
+            "Paste any Amazon or Flipkart link in this chat or use:\n"
+            "`/track <PRODUCT_URL> <TARGET_PRICE>`"
         )
         if update.message:
             await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
@@ -229,21 +231,22 @@ async def list_products_command(update: Update, context: ContextTypes.DEFAULT_TY
             await update.callback_query.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
         return
 
-    text = f"📋 *Your Tracked Amazon Products ({len(products)}):*\n━━━━━━━━━━━━━━━━━━━\n\n"
+    text = f"📋 *Your Tracked Products ({len(products)}):*\n━━━━━━━━━━━━━━━━━━━\n\n"
     keyboard = []
 
     for p in products:
         savings = p["current_price"] - p["target_price"]
         curr_str = f"{p['currency']}{p['current_price']:,.2f}"
         target_str = f"{p['currency']}{p['target_price']:,.2f}"
+        platform_icon = "🛍️" if p.get("platform") == "Flipkart" else "📦"
 
         text += (
-            f"• *ID `#{p['id']}`:* [{p['title'][:40]}...]({p['url']})\n"
+            f"• *ID `#{p['id']}`:* {platform_icon} [{p['title'][:38]}...]({p['url']})\n"
             f"  💰 Current: `{curr_str}` ➔ Target: `{target_str}` "
             f"_(Needs {p['currency']}{savings:,.2f} drop)_\n\n"
         )
         keyboard.append([
-            InlineKeyboardButton(f"🛒 #{p['id']} Buy", url=p["url"]),
+            InlineKeyboardButton(f"🛒 #{p['id']} View", url=p["url"]),
             InlineKeyboardButton(f"❌ Stop #{p['id']}", callback_data=f"del_{p['id']}"),
         ])
 
@@ -284,51 +287,51 @@ async def cleartrack_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 # ---------------------------------------------------------
-# Natural Message Handler: Direct Amazon URL Pasted
+# Natural Message Handler: Direct Link Pasted
 # ---------------------------------------------------------
 
-async def handle_amazon_url_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Detect when a user simply pastes an Amazon link without any command."""
+async def handle_url_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Detect when a user pastes an Amazon or Flipkart link without any command."""
     if not update.message or not update.message.text:
         return
 
     text = update.message.text.strip()
-    asin = amazon_service.extract_asin(text)
-    if not asin and "amazon." not in text and "amzn." not in text:
-        return  # Not an Amazon link
+    platform = product_service.detect_platform(text)
+    if platform == "Unknown":
+        return
 
-    loading = await update.message.reply_text("🔎 Amazon link detected! Fetching current price and details...")
-    product = amazon_service.fetch_amazon_product(text)
+    loading = await update.message.reply_text(f"🔎 {platform} link detected! Fetching current price and details...")
+    product = product_service.fetch_product(text)
     if not product:
-        await loading.edit_text("❌ Could not extract details from this Amazon link. Please check if the link is active.")
+        await loading.edit_text(f"❌ Could not extract details from this {platform} link. Please check if the page is active.")
         return
 
     curr_price = product["price"]
     currency = product["currency"]
 
-    # Calculate suggested target prices
     p5 = round(curr_price * 0.95, 2)
     p10 = round(curr_price * 0.90, 2)
     p15 = round(curr_price * 0.85, 2)
 
     caption = (
-        f"📦 *{product['title'][:80]}...*\n"
+        f"{product['platform_badge']} *{product['title'][:75]}...*\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
         f"💰 *Current Price:* `{currency}{curr_price:,.2f}`\n\n"
-        f"🎯 *Select your desired price drop below:* or reply with `/track {product['asin']} <price>`"
+        f"🎯 *Select your desired price drop below:* or reply with `/track {product['url']} <price>`"
     )
 
-    # Store product data in context user_data for quick buttons
-    context.user_data[f"prod_{product['asin']}"] = product
+    # Store product data in context user_data
+    cache_key = f"prod_{product['item_id']}"
+    context.user_data[cache_key] = product
 
     keyboard = [
         [
-            InlineKeyboardButton(f"🔔 5% Drop ({currency}{p5:,.0f})", callback_data=f"set_{product['asin']}_{p5}"),
-            InlineKeyboardButton(f"🔔 10% Drop ({currency}{p10:,.0f})", callback_data=f"set_{product['asin']}_{p10}"),
+            InlineKeyboardButton(f"🔔 5% Drop ({currency}{p5:,.0f})", callback_data=f"set_{product['item_id']}_{p5}"),
+            InlineKeyboardButton(f"🔔 10% Drop ({currency}{p10:,.0f})", callback_data=f"set_{product['item_id']}_{p10}"),
         ],
         [
-            InlineKeyboardButton(f"🔥 15% Drop ({currency}{p15:,.0f})", callback_data=f"set_{product['asin']}_{p15}"),
-            InlineKeyboardButton("🛒 View on Amazon", url=product["url"]),
+            InlineKeyboardButton(f"🔥 15% Drop ({currency}{p15:,.0f})", callback_data=f"set_{product['item_id']}_{p15}"),
+            InlineKeyboardButton(f"🛒 View on {product['platform']}", url=product["url"]),
         ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -362,21 +365,19 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     if data.startswith("set_"):
         parts = data.split("_")
-        asin = parts[1]
+        item_id = parts[1]
         target_price = float(parts[2])
 
-        product = context.user_data.get(f"prod_{asin}")
+        product = context.user_data.get(f"prod_{item_id}")
         if not product:
-            product = amazon_service.fetch_amazon_product(asin)
-
-        if not product:
-            await query.edit_message_caption("❌ Error: Product details expired. Please re-paste the Amazon link.")
+            await query.message.reply_text("❌ Session expired. Please re-paste the product link.")
             return
 
         product_id = database.add_tracked_product(
             user_id=query.from_user.id,
             chat_id=query.message.chat_id,
-            asin=product["asin"],
+            platform=product["platform"],
+            item_id=product["item_id"],
             title=product["title"],
             url=product["url"],
             image_url=product.get("image_url"),
@@ -388,6 +389,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         confirm = (
             f"✅ *Tracking Alert Activated!* (ID: `#{product_id}`)\n"
             f"━━━━━━━━━━━━━━━━━━━\n"
+            f"🏷️ *Platform:* `{product['platform_badge']}`\n"
             f"📦 *{product['title'][:70]}...*\n\n"
             f"💰 *Current Price:* `{product['currency']}{product['price']:,.2f}`\n"
             f"🎯 *Target Price:* `{product['currency']}{target_price:,.2f}`\n"
@@ -419,10 +421,10 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 
 # ---------------------------------------------------------
-# Background Job: Amazon Price Drop Monitor
+# Background Job: Amazon & Flipkart Price Drop Monitor
 # ---------------------------------------------------------
 
-async def check_amazon_prices_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+async def check_prices_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Background worker that polls active tracked products for price drops.
     Dispatches notifications when current_price <= target_price.
@@ -433,14 +435,14 @@ async def check_amazon_prices_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 
     logger.info(f"Checking prices for {len(products)} active tracked product(s)...")
 
-    # Group by ASIN to avoid duplicate scraping requests
-    asin_map: Dict[str, list] = {}
+    # Group by URL to avoid duplicate scraping
+    url_map: Dict[str, list] = {}
     for p in products:
-        asin_map.setdefault(p["asin"], []).append(p)
+        url_map.setdefault(p["url"], []).append(p)
 
-    for asin, items in asin_map.items():
+    for url, items in url_map.items():
         sample = items[0]
-        prod_data = amazon_service.fetch_amazon_product(sample["url"])
+        prod_data = product_service.fetch_product(url)
         if not prod_data or not prod_data.get("price"):
             continue
 
@@ -452,8 +454,10 @@ async def check_amazon_prices_job(context: ContextTypes.DEFAULT_TYPE) -> None:
             chat_id = item["chat_id"]
             currency = item["currency"]
             title = prod_data["title"]
-            url = prod_data["url"]
+            prod_url = prod_data["url"]
             image_url = prod_data.get("image_url")
+            platform = prod_data["platform"]
+            badge = prod_data.get("platform_badge", platform)
 
             # Update latest price in DB
             database.update_product_price(product_id, new_price)
@@ -461,13 +465,13 @@ async def check_amazon_prices_job(context: ContextTypes.DEFAULT_TYPE) -> None:
             # Check if Price Drop Target Reached
             if new_price <= target_price:
                 database.mark_product_triggered(product_id, new_price)
-                logger.info(f"Price Drop Triggered: #{product_id} ({asin}) at {new_price} (Target: {target_price})")
+                logger.info(f"Price Drop Triggered: #{product_id} on {platform} at {new_price} (Target: {target_price})")
 
                 savings = item["initial_price"] - new_price
                 savings_pct = (savings / item["initial_price"] * 100) if item["initial_price"] > 0 else 0
 
                 alert_text = (
-                    f"🎉🚨 *PRICE DROP ALERT!* 🚨🎉\n"
+                    f"🎉🚨 *{badge} PRICE DROP ALERT!* 🚨🎉\n"
                     f"━━━━━━━━━━━━━━━━━━━\n"
                     f"📦 *{title[:75]}...*\n\n"
                     f"🔥 *New Price:* `{currency}{new_price:,.2f}`\n"
@@ -478,7 +482,7 @@ async def check_amazon_prices_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                 )
 
                 keyboard = [
-                    [InlineKeyboardButton("🛒 Buy Now on Amazon", url=url)]
+                    [InlineKeyboardButton(f"🛒 Buy Now on {platform}", url=prod_url)]
                 ]
                 reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -507,14 +511,14 @@ async def check_amazon_prices_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 # ---------------------------------------------------------
 
 def main() -> None:
-    """Initialize and run the Amazon Price Drop Tracker Bot."""
+    """Initialize and run the Price Drop Tracker Bot."""
     if not BOT_TOKEN:
         print("❌ Error: TELEGRAM_BOT_TOKEN is not set in .env file!")
         return
 
     # Initialize SQLite database
     database.init_db()
-    logger.info("Amazon Tracker Database initialized successfully.")
+    logger.info("Price Tracker Database initialized successfully.")
 
     # Build Application
     app = ApplicationBuilder().token(BOT_TOKEN).build()
@@ -533,18 +537,18 @@ def main() -> None:
     # Interactive button handler
     app.add_handler(CallbackQueryHandler(callback_handler))
 
-    # Direct message handler (Auto-detects when an Amazon link is pasted)
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_amazon_url_message))
+    # Direct message handler (Auto-detects when an Amazon or Flipkart link is pasted)
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url_message))
 
-    # Background Job: Polls Amazon prices (every 5 minutes = 300 seconds)
+    # Background Job: Polls prices every 5 minutes (300 seconds)
     if app.job_queue:
-        app.job_queue.run_repeating(check_amazon_prices_job, interval=300, first=15)
-        logger.info("Amazon price drop background job registered (300s interval).")
+        app.job_queue.run_repeating(check_prices_job, interval=300, first=15)
+        logger.info("Price drop background job registered (300s interval).")
 
     print("\n" + "=" * 55)
-    print("🛍️ Amazon Price Drop Tracker Bot (@Stockmightybot) Live!")
+    print("🛍️ Amazon & Flipkart Price Drop Bot (@Stockmightybot) Live!")
     print("=" * 55)
-    print("Monitoring Amazon products and listening for link inputs...\n")
+    print("Monitoring Amazon & Flipkart and listening for link inputs...\n")
 
     app.run_polling(drop_pending_updates=True)
 

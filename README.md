@@ -1,21 +1,21 @@
-# Amazon Price Drop Tracker Bot 🛍️📉
+# Amazon & Flipkart Price Drop Tracker Bot 🛍️📉
 
-A full-featured Telegram bot that tracks Amazon product prices in real time and automatically sends you an instant Telegram notification whenever an item drops to or below your desired target price.
+A full-featured Telegram bot that tracks product prices across **Amazon** and **Flipkart** in real time and automatically delivers an instant Telegram notification whenever an item drops to or below your desired target price.
 
 ---
 
 ## 🌟 Key Features
 
-1. **🔗 Universal Amazon Link Support**
-   - Works with **Amazon India (`amazon.in`)** and **Amazon US / Global (`amazon.com`)**.
-   - Supports regular product URLs (`/dp/...`, `/gp/product/...`) and mobile short links (`amzn.in/d/...`, `amzn.to/...`).
+1. **🛍️ Multi-Platform Support**
+   - **Amazon:** Amazon India (`amazon.in`), Amazon US/Global (`amazon.com`), and mobile short links (`amzn.in/d/...`, `amzn.to/...`).
+   - **Flipkart:** `flipkart.com` and Flipkart mobile app short links (`dl.flipkart.com/s/...`).
 
 2. **⚡ Seamless 1-Click Tracking**
-   - **Method A:** Just paste or share any Amazon product link into the chat! The bot automatically fetches the product image, title, and current price, and displays quick 1-click discount buttons (`5% Drop`, `10% Drop`, `15% Drop`).
-   - **Method B:** Use `/track <AMAZON_URL> <TARGET_PRICE>` to set an exact target price.
+   - **Method A:** Just paste or share any Amazon or Flipkart product link into the chat! The bot automatically detects the platform, fetches product image, title, and current price, and displays quick 1-click discount buttons (`5% Drop`, `10% Drop`, `15% Drop`).
+   - **Method B:** Use `/track <PRODUCT_URL> <TARGET_PRICE>` to set an exact target price.
 
-3. **⏰ Background Price Monitoring**
-   - Runs a 24/7 background scheduler checking all active tracked items.
+3. **⏰ 24/7 Background Price Monitoring**
+   - Runs a background worker checking all active tracked items every 5 minutes.
    - When the price drops to or below your target, you receive an instant alert with product photo, amount saved, and direct link to buy.
 
 4. **📋 Tracked Items Dashboard**
@@ -31,7 +31,7 @@ A full-featured Telegram bot that tracks Amazon product prices in real time and 
 | Command | Description | Example |
 |---|---|---|
 | `/start` | Launch menu & instructions | `/start` |
-| `/track <URL> <PRICE>` | Track an Amazon item at target price | `/track https://www.amazon.in/dp/B09G9BL5CP 75000` |
+| `/track <URL> <PRICE>` | Track item with target price | `/track https://www.flipkart.com/... 55000`<br>`/track https://www.amazon.in/... 75000` |
 | `/products` | View and manage all your tracked items | `/products` |
 | `/deltrack <ID>` | Stop tracking a specific item | `/deltrack 1` |
 | `/cleartrack` | Stop tracking all items | `/cleartrack` |
@@ -57,7 +57,7 @@ C:\Users\xMonks\TB\
 ├── .gitignore          # Git exclusion rules
 ├── bot.py              # Telegram bot runtime, handlers & price monitor
 ├── database.py         # SQLite database models for tracked products
-├── amazon_service.py   # Amazon product scraper with curl_cffi browser impersonation
+├── product_service.py  # Amazon & Flipkart scraper with curl_cffi browser impersonation
 ├── Dockerfile          # Container configuration
 ├── Procfile            # Cloud process definition
 ├── render.yaml         # Blueprint for Render
