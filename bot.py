@@ -1,10 +1,11 @@
-"""Telegram Stock Alert Bot (@Stockmightybot).
+"""Amazon Price Drop Tracker Telegram Bot (@Stockmightybot).
 
-Provides live stock prices, price charts, automated target price notifications,
-technical analysis, market news, and personal watchlists.
+Monitors Amazon product prices and delivers automated alerts whenever a product's
+price drops to or below your desired target price.
 """
 
 import os
+import re
 import logging
 from typing import Dict, Any
 from dotenv import load_dotenv
@@ -19,11 +20,13 @@ from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     CallbackQueryHandler,
+    MessageHandler,
     ContextTypes,
+    filters,
 )
 
 import database
-import stock_service
+import amazon_service
 
 # Load environment variables
 load_dotenv()
@@ -34,25 +37,20 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
-logger = logging.getLogger("StockMightyBot")
+logger = logging.getLogger("AmazonTrackerBot")
 
 
 # ---------------------------------------------------------
 # Helper Functions
 # ---------------------------------------------------------
 
-def parse_symbol_and_target(args: list[str]) -> tuple[str, float]:
-    """Parse symbol and target price from argument list."""
-    if len(args) < 2:
-        raise ValueError("Need at least symbol and target price")
-
-    target_str = args[-1].replace("$", "").replace("₹", "").replace(",", "")
-    target_price = float(target_str)
-    if target_price <= 0:
-        raise ValueError("Target price must be positive")
-
-    raw_symbol = " ".join(args[:-1]).strip()
-    return raw_symbol, target_price
+def clean_price_input(price_str: str) -> float:
+    """Parse user numeric price input."""
+    cleaned = price_str.replace("₹", "").replace("$", "").replace(",", "").strip()
+    val = float(cleaned)
+    if val <= 0:
+        raise ValueError("Price must be greater than zero")
+    return val
 
 
 # ---------------------------------------------------------
@@ -60,42 +58,31 @@ def parse_symbol_and_target(args: list[str]) -> tuple[str, float]:
 # ---------------------------------------------------------
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Send welcome message and guide the user on how to use the bot."""
+    """Send welcome message and guide the user on how to track Amazon products."""
     user = update.effective_user
-    name = user.first_name if user else "Trader"
+    name = user.first_name if user else "Shopper"
 
     text = (
-        f"👋 *Welcome to StockMightyBot, {name}!*\n\n"
-        "I am your personal stock market companion. Track live prices, analyze technical indicators, "
-        "read real-time market news, and get instant notifications when your target prices are hit!\n\n"
-        "⚡ *Core Commands:*\n"
-        "• `/price <SYMBOL>` — Live market quote\n"
-        "• `/alert <SYMBOL> <TARGET>` — Set price target alert\n"
-        "• `/alerts` — View and manage your alerts\n"
-        "• `/chart <SYMBOL>` — Price trend chart (1d, 5d, 1mo, 3mo, 1y)\n"
-        "• `/ta <SYMBOL>` — Technical analysis (RSI, SMA 50/200)\n"
-        "• `/news <SYMBOL>` — Recent market news headlines\n"
-        "• `/watchlist` — View your personal watchlist\n"
-        "• `/help` — Complete syntax & examples\n\n"
-        "🔥 *Quick Examples:*\n"
-        "  `/alert NIFTY 50 25044`\n"
-        "  `/price RELIANCE`\n"
-        "  `/ta AAPL`\n"
-        "  `/news TSLA`\n"
-        "  `/chart NVDA`"
+        f"👋 *Welcome to Amazon Price Drop Alert Bot, {name}!*\n\n"
+        "🛍️ Never overpay again! Send me any **Amazon product link**, set your desired target price, "
+        "and I will notify you the moment the price drops!\n\n"
+        "⚡ *How to use:*\n"
+        "1. Simply **paste or share any Amazon link** into this chat.\n"
+        "2. Choose a quick discount button (5%, 10%, 15% drop) or set your own target!\n\n"
+        "📋 *Commands:*\n"
+        "• `/track <URL> <DESIRED_PRICE>` — Track product with target price\n"
+        "• `/products` — View and manage all your tracked items\n"
+        "• `/deltrack <ID>` — Stop tracking a product\n"
+        "• `/cleartrack` — Clear all tracked products\n"
+        "• `/help` — Detailed guide & examples\n\n"
+        "_Example:_\n"
+        "`/track https://www.amazon.in/dp/B09G9BL5CP 75000`"
     )
 
     keyboard = [
         [
-            InlineKeyboardButton("🇮🇳 Nifty 50 Price", callback_data="price_^NSEI"),
-            InlineKeyboardButton("🇺🇸 Apple Price", callback_data="price_AAPL"),
-        ],
-        [
-            InlineKeyboardButton("📋 My Alerts", callback_data="list_alerts"),
-            InlineKeyboardButton("⭐ My Watchlist", callback_data="view_watchlist"),
-        ],
-        [
-            InlineKeyboardButton("❓ Help & Guide", callback_data="help_menu"),
+            InlineKeyboardButton("📋 My Tracked Products", callback_data="list_products"),
+            InlineKeyboardButton("❓ Help & Examples", callback_data="help_menu"),
         ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -106,29 +93,22 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send detailed help and usage guide."""
     text = (
-        "📚 *StockMightyBot Complete Guide*\n\n"
-        "🔔 *Price Alerts:*\n"
-        "• `/alert <SYMBOL> <TARGET>` — Set target price (auto-detects above/below)\n"
-        "  _Example:_ `/alert NIFTY 50 25044`\n"
-        "  _Example:_ `/alert AAPL 250`\n"
-        "• `/alerts` — View active alerts with 1-click delete\n"
-        "• `/delalert <ID>` — Delete a specific alert\n"
-        "• `/clearalerts` — Delete all your active alerts\n\n"
-        "💰 *Quotes & Technicals:*\n"
-        "• `/price <SYMBOL>` — Real-time price quote\n"
-        "• `/chart <SYMBOL> [PERIOD]` — Trend chart (`1d`, `5d`, `1mo`, `3mo`, `1y`)\n"
-        "• `/ta <SYMBOL>` — Technical indicators (RSI 14, 50 & 200 SMA, Sentiment)\n"
-        "• `/news <SYMBOL>` — Latest market headlines with links\n\n"
-        "⭐ *Personal Watchlist:*\n"
-        "• `/watchlist` — View all your saved stocks in one board\n"
-        "• `/addwatch <SYMBOL>` — Add stock to watchlist\n"
-        "• `/delwatch <SYMBOL>` — Remove stock from watchlist\n\n"
-        "🌐 *Supported Symbols:*\n"
-        "• Indian Indices: `NIFTY 50`, `BANK NIFTY`, `FINNIFTY`, `SENSEX`, `INDIA VIX`\n"
-        "• Indian Stocks: `RELIANCE`, `TCS`, `INFY`, `HDFCBANK`, `TATAMOTORS`\n"
-        "• US Stocks: `AAPL`, `MSFT`, `TSLA`, `GOOGL`, `AMZN`, `NVDA`\n"
-        "• Crypto: `BTC`, `ETH`, `SOL`\n"
-        "• Commodities: `GOLD`, `SILVER`, `CRUDE`"
+        "📚 *Amazon Price Tracker Guide*\n\n"
+        "🛒 *Tracking an Item:*\n"
+        "**Method 1 (Fastest):**\n"
+        "Just copy any product link from the Amazon App or browser and paste it here! "
+        "The bot will fetch the item and let you pick your target price.\n\n"
+        "**Method 2 (Command):**\n"
+        "`/track <AMAZON_LINK> <DESIRED_PRICE>`\n"
+        "• `/track https://www.amazon.in/dp/B09G9BL5CP 75000`\n"
+        "• `/track https://amzn.to/example 1999`\n\n"
+        "📋 *Managing Your Products:*\n"
+        "• `/products` or `/alerts` — See all your tracked items with current vs target prices\n"
+        "• `/deltrack <ID>` — Delete a tracked item\n"
+        "• `/cleartrack` — Remove all your tracked items\n\n"
+        "🌐 *Supported Amazon Domains:*\n"
+        "• Amazon India (`amazon.in`, `amzn.in`)\n"
+        "• Amazon US & Global (`amazon.com`, `amzn.to`)"
     )
     if update.message:
         await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
@@ -136,156 +116,112 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await update.callback_query.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
 
 
-async def price_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Fetch and display real-time quote for a stock or index."""
-    if not context.args:
-        await update.message.reply_text(
-            "⚠️ Please specify a symbol.\nExample: `/price NIFTY 50` or `/price AAPL`",
-            parse_mode=ParseMode.MARKDOWN,
-        )
-        return
-
-    symbol = " ".join(context.args).strip()
-    await send_stock_quote(update.message.chat_id, symbol, context)
-
-
-async def send_stock_quote(chat_id: int, symbol: str, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Fetch and send formatted stock quote."""
-    loading_msg = await context.bot.send_message(
-        chat_id=chat_id,
-        text=f"🔍 Fetching live quote for *{symbol}*...",
-        parse_mode=ParseMode.MARKDOWN,
-    )
-
-    quote = stock_service.get_stock_quote(symbol)
-    if not quote:
-        await loading_msg.edit_text(
-            f"❌ Could not find market data for *{symbol}*. Please check the symbol or index name.",
-            parse_mode=ParseMode.MARKDOWN,
-        )
-        return
-
-    sign = "+" if quote["change"] >= 0 else ""
-    trend_emoji = "🟢 📈" if quote["change"] >= 0 else "🔴 📉"
-
-    text = (
-        f"🏷️ *{quote['name']}* (`{quote['symbol']}`)\n"
-        f"━━━━━━━━━━━━━━━━━━━\n"
-        f"💰 *Current Price:* `{quote['price']} {quote['currency']}`\n"
-        f"{trend_emoji} *24h Change:* `{sign}{quote['change']} ({sign}{quote['change_pct']}%)`\n"
-        f"🔺 *Day High:* `{quote['day_high']} {quote['currency']}`\n"
-        f"🔻 *Day Low:* `{quote['day_low']} {quote['currency']}`\n"
-        f"⏮️ *Prev Close:* `{quote['prev_close']} {quote['currency']}`\n"
-        f"━━━━━━━━━━━━━━━━━━━\n"
-        f"_Use `/alert {quote['symbol']} <price>` to set a target price alert!_"
-    )
-
-    keyboard = [
-        [
-            InlineKeyboardButton("📊 Chart", callback_data=f"chart_{quote['symbol']}"),
-            InlineKeyboardButton("📈 TA", callback_data=f"ta_{quote['symbol']}"),
-            InlineKeyboardButton("📰 News", callback_data=f"news_{quote['symbol']}"),
-        ],
-        [
-            InlineKeyboardButton("⭐ Add to Watchlist", callback_data=f"addwatch_{quote['symbol']}"),
-            InlineKeyboardButton("🔄 Refresh", callback_data=f"price_{quote['symbol']}"),
-        ]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    await loading_msg.edit_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
-
-
-async def alert_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Set a target price alert for a stock or index."""
+async def track_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Track an Amazon product at a specified target price."""
     user = update.effective_user
     chat_id = update.effective_chat.id
 
     if not context.args or len(context.args) < 2:
         await update.message.reply_text(
-            "⚠️ *Invalid format!* Please provide both symbol and target price.\n\n"
-            "Usage: `/alert <SYMBOL> <TARGET_PRICE>`\n"
-            "Examples:\n"
-            "• `/alert NIFTY 50 25044`\n"
-            "• `/alert BANK NIFTY 60000`\n"
-            "• `/alert AAPL 250`\n"
-            "• `/alert RELIANCE 1350`",
+            "⚠️ *Invalid Format!*\n\n"
+            "Usage: `/track <AMAZON_URL> <DESIRED_PRICE>`\n"
+            "Example: `/track https://www.amazon.in/dp/B09G9BL5CP 75000`",
             parse_mode=ParseMode.MARKDOWN,
         )
         return
 
+    url = context.args[0].strip()
     try:
-        raw_symbol, target_price = parse_symbol_and_target(context.args)
+        target_price = clean_price_input(context.args[1])
     except ValueError as e:
-        await update.message.reply_text(f"❌ Error: {e}. Please enter a valid number for the target price.")
+        await update.message.reply_text(f"❌ Invalid target price: {e}")
         return
 
-    quote = stock_service.get_stock_quote(raw_symbol)
-    if not quote:
-        await update.message.reply_text(
-            f"❌ Unable to find symbol or index *{raw_symbol}*. Please check the ticker name.",
-            parse_mode=ParseMode.MARKDOWN,
+    loading_msg = await update.message.reply_text("🔍 Fetching product details from Amazon... Please wait.")
+
+    product = amazon_service.fetch_amazon_product(url)
+    if not product:
+        await loading_msg.edit_text(
+            "❌ Could not extract product details. Please ensure the link is a valid Amazon product page."
         )
         return
 
-    resolved_symbol = quote["symbol"]
-    current_price = quote["price"]
-    currency = quote["currency"]
+    curr_price = product["price"]
+    currency = product["currency"]
 
-    if abs(target_price - current_price) < 0.001:
-        await update.message.reply_text(
-            f"⚠️ Target price ({target_price}) is equal to current price ({current_price}). "
-            "Please pick a higher or lower target."
+    if target_price >= curr_price:
+        await loading_msg.edit_text(
+            f"⚠️ Target price ({currency}{target_price:,.2f}) is already higher than or equal to the "
+            f"current price ({currency}{curr_price:,.2f}).\n"
+            "Please specify a lower target price to get alerted on a price drop!"
         )
         return
 
-    condition = "ABOVE" if target_price > current_price else "BELOW"
-    condition_desc = "rises to or above" if condition == "ABOVE" else "drops to or below"
-    emoji = "📈" if condition == "ABOVE" else "📉"
+    savings = curr_price - target_price
+    savings_pct = (savings / curr_price) * 100
 
-    alert_id = database.add_alert(
+    # Save to database
+    product_id = database.add_tracked_product(
         user_id=user.id,
         chat_id=chat_id,
-        symbol=resolved_symbol,
+        asin=product["asin"],
+        title=product["title"],
+        url=product["url"],
+        image_url=product.get("image_url"),
         target_price=target_price,
-        condition=condition,
-        initial_price=current_price,
+        current_price=curr_price,
         currency=currency,
     )
 
-    confirm_text = (
-        f"✅ *Target Alert Created!* (ID: `#{alert_id}`)\n"
+    caption = (
+        f"✅ *Product Successfully Tracked!* (ID: `#{product_id}`)\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
-        f"🏷️ *Asset:* `{resolved_symbol}` ({quote['name']})\n"
-        f"💰 *Current Price:* `{current_price} {currency}`\n"
-        f"🎯 *Target Price:* `{target_price} {currency}`\n"
-        f"{emoji} *Condition:* Alert when price *{condition_desc}* `{target_price} {currency}`\n"
+        f"📦 *{product['title'][:70]}...*\n\n"
+        f"💰 *Current Price:* `{currency}{curr_price:,.2f}`\n"
+        f"🎯 *Target Price:* `{currency}{target_price:,.2f}`\n"
+        f"📉 *Target Savings:* `{currency}{savings:,.2f} ({savings_pct:.1f}% OFF)`\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
-        f"🔔 I will notify you automatically the moment this target is reached!"
+        f"🔔 I am actively monitoring this item and will alert you the moment the price drops!"
     )
 
     keyboard = [
         [
-            InlineKeyboardButton("📋 View All Alerts", callback_data="list_alerts"),
-            InlineKeyboardButton("❌ Cancel Alert", callback_data=f"del_{alert_id}"),
+            InlineKeyboardButton("🛒 View on Amazon", url=product["url"]),
+            InlineKeyboardButton("❌ Stop Tracking", callback_data=f"del_{product_id}"),
+        ],
+        [
+            InlineKeyboardButton("📋 View All Products", callback_data="list_products"),
         ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    await update.message.reply_text(confirm_text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+    await loading_msg.delete()
+
+    if product.get("image_url"):
+        try:
+            await update.message.reply_photo(
+                photo=product["image_url"],
+                caption=caption,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=reply_markup,
+            )
+            return
+        except Exception:
+            pass
+
+    await update.message.reply_text(caption, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
 
 
-async def list_alerts_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Display all active alerts for the calling user."""
+async def list_products_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """List all tracked Amazon products for the user."""
     user = update.effective_user
-    alerts = database.get_user_alerts(user.id)
+    products = database.get_user_products(user.id)
 
-    if not alerts:
+    if not products:
         text = (
-            "📭 *You have no active price alerts.*\n\n"
-            "Set one right now using:\n"
-            "`/alert <SYMBOL> <TARGET_PRICE>`\n"
-            "Example: `/alert NIFTY 50 25044`"
+            "📭 *You are not tracking any Amazon products yet.*\n\n"
+            "Paste any Amazon link in this chat or use:\n"
+            "`/track <AMAZON_URL> <TARGET_PRICE>`"
         )
         if update.message:
             await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
@@ -293,279 +229,129 @@ async def list_alerts_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             await update.callback_query.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
         return
 
-    text = f"📋 *Your Active Price Alerts ({len(alerts)}):*\n━━━━━━━━━━━━━━━━━━━\n"
+    text = f"📋 *Your Tracked Amazon Products ({len(products)}):*\n━━━━━━━━━━━━━━━━━━━\n\n"
     keyboard = []
 
-    for a in alerts:
-        cond_icon = "📈 ≥" if a["condition"] == "ABOVE" else "📉 ≤"
+    for p in products:
+        savings = p["current_price"] - p["target_price"]
+        curr_str = f"{p['currency']}{p['current_price']:,.2f}"
+        target_str = f"{p['currency']}{p['target_price']:,.2f}"
+
         text += (
-            f"• *ID `#{a['id']}`:* `{a['symbol']}` target {cond_icon} `{a['target_price']} {a['currency']}` "
-            f"_(set at {a['initial_price']})_\n"
+            f"• *ID `#{p['id']}`:* [{p['title'][:40]}...]({p['url']})\n"
+            f"  💰 Current: `{curr_str}` ➔ Target: `{target_str}` "
+            f"_(Needs {p['currency']}{savings:,.2f} drop)_\n\n"
         )
         keyboard.append([
-            InlineKeyboardButton(f"❌ Delete #{a['id']} ({a['symbol']})", callback_data=f"del_{a['id']}"),
-            InlineKeyboardButton(f"🔍 Price {a['symbol']}", callback_data=f"price_{a['symbol']}"),
+            InlineKeyboardButton(f"🛒 #{p['id']} Buy", url=p["url"]),
+            InlineKeyboardButton(f"❌ Stop #{p['id']}", callback_data=f"del_{p['id']}"),
         ])
 
-    keyboard.append([InlineKeyboardButton("🗑️ Clear All Alerts", callback_data="clear_all")])
+    keyboard.append([InlineKeyboardButton("🗑️ Clear All Tracked Items", callback_data="clear_all")])
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     if update.message:
-        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup, disable_web_page_preview=True)
     elif update.callback_query:
-        await update.callback_query.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+        await update.callback_query.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup, disable_web_page_preview=True)
 
 
-async def delalert_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Delete a specific alert by ID."""
+async def deltrack_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Delete a tracked product by ID."""
     user = update.effective_user
     if not context.args:
-        await update.message.reply_text(
-            "⚠️ Usage: `/delalert <ID>`\nCheck your alert IDs with `/alerts`.",
-            parse_mode=ParseMode.MARKDOWN,
-        )
+        await update.message.reply_text("⚠️ Usage: `/deltrack <ID>`\nCheck your product IDs with `/products`.", parse_mode=ParseMode.MARKDOWN)
         return
 
     try:
-        alert_id = int(context.args[0].replace("#", ""))
+        product_id = int(context.args[0].replace("#", ""))
     except ValueError:
-        await update.message.reply_text("❌ Alert ID must be a number.")
+        await update.message.reply_text("❌ Product ID must be a number.")
         return
 
-    success = database.delete_alert(alert_id, user_id=user.id)
+    success = database.delete_tracked_product(product_id, user_id=user.id)
     if success:
-        await update.message.reply_text(f"✅ Alert `#{alert_id}` has been deleted.", parse_mode=ParseMode.MARKDOWN)
+        await update.message.reply_text(f"✅ Product `#{product_id}` tracking stopped.", parse_mode=ParseMode.MARKDOWN)
     else:
-        await update.message.reply_text(f"❌ Alert `#{alert_id}` not found or already deleted.", parse_mode=ParseMode.MARKDOWN)
+        await update.message.reply_text(f"❌ Product `#{product_id}` not found or already removed.", parse_mode=ParseMode.MARKDOWN)
 
 
-async def clearalerts_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Clear all active alerts for user."""
+async def cleartrack_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Clear all active tracked products for user."""
     user = update.effective_user
-    count = database.clear_user_alerts(user.id)
-    await update.message.reply_text(f"🗑️ Cleared {count} active alert(s).")
+    count = database.clear_user_products(user.id)
+    await update.message.reply_text(f"🗑️ Cleared all {count} tracked product(s).")
 
 
-async def chart_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Generate and send a technical chart for a stock or index."""
-    chat_id = update.effective_chat.id
-    if not context.args:
-        await update.message.reply_text(
-            "⚠️ Usage: `/chart <SYMBOL> [PERIOD]`\nExample: `/chart NIFTY 50` or `/chart AAPL 3mo`",
-            parse_mode=ParseMode.MARKDOWN,
-        )
+# ---------------------------------------------------------
+# Natural Message Handler: Direct Amazon URL Pasted
+# ---------------------------------------------------------
+
+async def handle_amazon_url_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Detect when a user simply pastes an Amazon link without any command."""
+    if not update.message or not update.message.text:
         return
 
-    valid_periods = ["1d", "5d", "1mo", "3mo", "6mo", "1y", "ytd", "max"]
-    if len(context.args) > 1 and context.args[-1].lower() in valid_periods:
-        period = context.args[-1].lower()
-        symbol = " ".join(context.args[:-1]).strip()
-    else:
-        period = "1mo"
-        symbol = " ".join(context.args).strip()
+    text = update.message.text.strip()
+    asin = amazon_service.extract_asin(text)
+    if not asin and "amazon." not in text and "amzn." not in text:
+        return  # Not an Amazon link
 
-    await send_stock_chart(chat_id, symbol, period, context)
-
-
-async def send_stock_chart(chat_id: int, symbol: str, period: str, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Render and send stock chart image."""
-    status_msg = await context.bot.send_message(
-        chat_id=chat_id,
-        text=f"📊 Generating *{period.upper()}* chart for *{symbol}*...",
-        parse_mode=ParseMode.MARKDOWN,
-    )
-
-    img_buf = stock_service.generate_stock_chart(symbol, period=period)
-    if not img_buf:
-        await status_msg.edit_text(
-            f"❌ Could not generate chart for *{symbol}*. Please check the symbol or period.",
-            parse_mode=ParseMode.MARKDOWN,
-        )
+    loading = await update.message.reply_text("🔎 Amazon link detected! Fetching current price and details...")
+    product = amazon_service.fetch_amazon_product(text)
+    if not product:
+        await loading.edit_text("❌ Could not extract details from this Amazon link. Please check if the link is active.")
         return
 
-    await status_msg.delete()
-    await context.bot.send_photo(
-        chat_id=chat_id,
-        photo=img_buf,
-        caption=f"📈 Chart for *{symbol}* ({period.upper()})",
-        parse_mode=ParseMode.MARKDOWN,
-    )
+    curr_price = product["price"]
+    currency = product["currency"]
 
+    # Calculate suggested target prices
+    p5 = round(curr_price * 0.95, 2)
+    p10 = round(curr_price * 0.90, 2)
+    p15 = round(curr_price * 0.85, 2)
 
-async def ta_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Calculate and display technical indicators."""
-    if not context.args:
-        await update.message.reply_text(
-            "⚠️ Usage: `/ta <SYMBOL>`\nExample: `/ta AAPL` or `/ta NIFTY 50`",
-            parse_mode=ParseMode.MARKDOWN,
-        )
-        return
-
-    symbol = " ".join(context.args).strip()
-    await send_technical_analysis(update.message.chat_id, symbol, context)
-
-
-async def send_technical_analysis(chat_id: int, symbol: str, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Send technical analysis breakdown."""
-    loading = await context.bot.send_message(chat_id=chat_id, text=f"📊 Calculating technicals for *{symbol}*...", parse_mode=ParseMode.MARKDOWN)
-
-    ta = stock_service.get_technical_analysis(symbol)
-    if not ta:
-        await loading.edit_text(f"❌ Could not calculate technicals for *{symbol}*.", parse_mode=ParseMode.MARKDOWN)
-        return
-
-    sma50_str = f"`{ta['sma50']} {ta['currency']}`" if ta['sma50'] else "`N/A`"
-    sma200_str = f"`{ta['sma200']} {ta['currency']}`" if ta['sma200'] else "`N/A`"
-
-    text = (
-        f"📊 *Technical Analysis: {ta['name']}* (`{ta['symbol']}`)\n"
+    caption = (
+        f"📦 *{product['title'][:80]}...*\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
-        f"💰 *Current Price:* `{ta['price']} {ta['currency']}`\n"
-        f"⚡ *Signal:* {ta['sentiment']}\n\n"
-        f"🔹 *RSI (14-day):* `{ta['rsi']}` — _{ta['rsi_desc']}_\n"
-        f"🔹 *50-day SMA:* {sma50_str}\n"
-        f"🔹 *200-day SMA:* {sma200_str}\n"
-        f"🔺 *52-Week High:* `{ta['high_52w']} {ta['currency']}`\n"
-        f"🔻 *52-Week Low:* `{ta['low_52w']} {ta['currency']}`\n"
-        f"━━━━━━━━━━━━━━━━━━━\n"
-        f"_Use `/chart {ta['symbol']}` to see the price chart!_"
+        f"💰 *Current Price:* `{currency}{curr_price:,.2f}`\n\n"
+        f"🎯 *Select your desired price drop below:* or reply with `/track {product['asin']} <price>`"
     )
+
+    # Store product data in context user_data for quick buttons
+    context.user_data[f"prod_{product['asin']}"] = product
 
     keyboard = [
         [
-            InlineKeyboardButton("📊 View Chart", callback_data=f"chart_{ta['symbol']}"),
-            InlineKeyboardButton("📰 News", callback_data=f"news_{ta['symbol']}"),
+            InlineKeyboardButton(f"🔔 5% Drop ({currency}{p5:,.0f})", callback_data=f"set_{product['asin']}_{p5}"),
+            InlineKeyboardButton(f"🔔 10% Drop ({currency}{p10:,.0f})", callback_data=f"set_{product['asin']}_{p10}"),
+        ],
+        [
+            InlineKeyboardButton(f"🔥 15% Drop ({currency}{p15:,.0f})", callback_data=f"set_{product['asin']}_{p15}"),
+            InlineKeyboardButton("🛒 View on Amazon", url=product["url"]),
         ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    await loading.edit_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+    await loading.delete()
 
-
-async def news_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Fetch recent news articles for a symbol."""
-    if not context.args:
-        await update.message.reply_text(
-            "⚠️ Usage: `/news <SYMBOL>`\nExample: `/news RELIANCE` or `/news TSLA`",
-            parse_mode=ParseMode.MARKDOWN,
-        )
-        return
-
-    symbol = " ".join(context.args).strip()
-    await send_news(update.message.chat_id, symbol, context)
-
-
-async def send_news(chat_id: int, symbol: str, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Send top market news."""
-    loading = await context.bot.send_message(chat_id=chat_id, text=f"📰 Fetching headlines for *{symbol}*...", parse_mode=ParseMode.MARKDOWN)
-
-    articles = stock_service.get_stock_news(symbol)
-    if not articles:
-        await loading.edit_text(f"❌ No recent news found for *{symbol}*.", parse_mode=ParseMode.MARKDOWN)
-        return
-
-    text = f"📰 *Recent Headlines for {symbol.upper()}:*\n━━━━━━━━━━━━━━━━━━━\n\n"
-    for idx, a in enumerate(articles, 1):
-        text += f"{idx}. [{a['title']}]({a['url']})\n   _Source: {a['publisher']}_\n\n"
-
-    await loading.edit_text(text, parse_mode=ParseMode.MARKDOWN, disable_web_page_preview=True)
-
-
-# ---------------------------------------------------------
-# Watchlist Commands
-# ---------------------------------------------------------
-
-async def watchlist_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Display user's personal watchlist with live prices."""
-    user = update.effective_user
-    chat_id = update.effective_chat.id
-    symbols = database.get_user_watchlist(user.id)
-
-    if not symbols:
-        text = (
-            "⭐ *Your Watchlist is empty!*\n\n"
-            "Add stocks to track them daily:\n"
-            "`/addwatch <SYMBOL>`\n"
-            "Example: `/addwatch NIFTY 50`\n"
-            "Example: `/addwatch RELIANCE`\n"
-            "Example: `/addwatch AAPL`"
-        )
-        if update.message:
-            await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
-        elif update.callback_query:
-            await update.callback_query.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
-        return
-
-    loading = await context.bot.send_message(chat_id=chat_id, text="⭐ Loading your watchlist...", parse_mode=ParseMode.MARKDOWN)
-
-    board_text = f"⭐ *Your Watchlist ({len(symbols)}):*\n━━━━━━━━━━━━━━━━━━━\n"
-    keyboard = []
-
-    for sym in symbols:
-        q = stock_service.get_stock_quote(sym)
-        if q:
-            sign = "+" if q["change"] >= 0 else ""
-            icon = "🟢" if q["change"] >= 0 else "🔴"
-            board_text += (
-                f"{icon} *{q['name']}* (`{q['symbol']}`)\n"
-                f"   💰 `{q['price']} {q['currency']}` | `{sign}{q['change_pct']}%`\n"
+    if product.get("image_url"):
+        try:
+            await update.message.reply_photo(
+                photo=product["image_url"],
+                caption=caption,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=reply_markup,
             )
-            keyboard.append([
-                InlineKeyboardButton(f"🔍 {q['symbol']}", callback_data=f"price_{q['symbol']}"),
-                InlineKeyboardButton(f"❌ Remove", callback_data=f"delwatch_{q['symbol']}"),
-            ])
-        else:
-            board_text += f"• `{sym}` — _Price unavailable_\n"
+            return
+        except Exception:
+            pass
 
-    board_text += "━━━━━━━━━━━━━━━━━━━\n_Add more with `/addwatch <SYMBOL>`_"
-    reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
-
-    await loading.edit_text(board_text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
-
-
-async def addwatch_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Add a symbol to user's watchlist."""
-    user = update.effective_user
-    if not context.args:
-        await update.message.reply_text("⚠️ Usage: `/addwatch <SYMBOL>`\nExample: `/addwatch TCS`", parse_mode=ParseMode.MARKDOWN)
-        return
-
-    raw_symbol = " ".join(context.args).strip()
-    quote = stock_service.get_stock_quote(raw_symbol)
-    if not quote:
-        await update.message.reply_text(f"❌ Symbol *{raw_symbol}* not found.", parse_mode=ParseMode.MARKDOWN)
-        return
-
-    success = database.add_to_watchlist(user.id, quote["symbol"])
-    if success:
-        await update.message.reply_text(
-            f"✅ Added *{quote['name']}* (`{quote['symbol']}`) to your watchlist!\n"
-            f"Type `/watchlist` to view it.",
-            parse_mode=ParseMode.MARKDOWN,
-        )
-    else:
-        await update.message.reply_text(f"ℹ️ *{quote['symbol']}* is already in your watchlist.", parse_mode=ParseMode.MARKDOWN)
-
-
-async def delwatch_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Remove a symbol from user's watchlist."""
-    user = update.effective_user
-    if not context.args:
-        await update.message.reply_text("⚠️ Usage: `/delwatch <SYMBOL>`\nExample: `/delwatch TCS`", parse_mode=ParseMode.MARKDOWN)
-        return
-
-    raw_symbol = " ".join(context.args).strip().upper()
-    resolved = stock_service.resolve_symbol(raw_symbol)
-
-    success = database.remove_from_watchlist(user.id, resolved) or database.remove_from_watchlist(user.id, raw_symbol)
-    if success:
-        await update.message.reply_text(f"🗑️ Removed *{raw_symbol}* from your watchlist.", parse_mode=ParseMode.MARKDOWN)
-    else:
-        await update.message.reply_text(f"❌ *{raw_symbol}* was not found in your watchlist.", parse_mode=ParseMode.MARKDOWN)
+    await update.message.reply_text(caption, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
 
 
 # ---------------------------------------------------------
-# Callback Query Handler (Inline Buttons)
+# Callback Query Handler (Interactive Buttons)
 # ---------------------------------------------------------
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -574,116 +360,146 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     await query.answer()
     data = query.data
 
-    if data.startswith("price_"):
-        symbol = data[len("price_"):]
-        await send_stock_quote(query.message.chat_id, symbol, context)
-    elif data.startswith("chart_"):
-        symbol = data[len("chart_"):]
-        await send_stock_chart(query.message.chat_id, symbol, "1mo", context)
-    elif data.startswith("ta_"):
-        symbol = data[len("ta_"):]
-        await send_technical_analysis(query.message.chat_id, symbol, context)
-    elif data.startswith("news_"):
-        symbol = data[len("news_"):]
-        await send_news(query.message.chat_id, symbol, context)
-    elif data.startswith("addwatch_"):
-        symbol = data[len("addwatch_"):]
-        success = database.add_to_watchlist(query.from_user.id, symbol)
-        msg = f"⭐ Added {symbol} to watchlist!" if success else f"ℹ️ {symbol} is already in watchlist."
-        await query.message.reply_text(msg)
-    elif data.startswith("delwatch_"):
-        symbol = data[len("delwatch_"):]
-        database.remove_from_watchlist(query.from_user.id, symbol)
-        await query.edit_message_text(f"🗑️ Removed {symbol} from watchlist.")
-    elif data.startswith("del_"):
-        alert_id = int(data.split("_")[1])
-        success = database.delete_alert(alert_id, user_id=query.from_user.id)
-        if success:
-            await query.edit_message_text(f"✅ Alert `#{alert_id}` has been cancelled.", parse_mode=ParseMode.MARKDOWN)
+    if data.startswith("set_"):
+        parts = data.split("_")
+        asin = parts[1]
+        target_price = float(parts[2])
+
+        product = context.user_data.get(f"prod_{asin}")
+        if not product:
+            product = amazon_service.fetch_amazon_product(asin)
+
+        if not product:
+            await query.edit_message_caption("❌ Error: Product details expired. Please re-paste the Amazon link.")
+            return
+
+        product_id = database.add_tracked_product(
+            user_id=query.from_user.id,
+            chat_id=query.message.chat_id,
+            asin=product["asin"],
+            title=product["title"],
+            url=product["url"],
+            image_url=product.get("image_url"),
+            target_price=target_price,
+            current_price=product["price"],
+            currency=product["currency"],
+        )
+
+        confirm = (
+            f"✅ *Tracking Alert Activated!* (ID: `#{product_id}`)\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"📦 *{product['title'][:70]}...*\n\n"
+            f"💰 *Current Price:* `{product['currency']}{product['price']:,.2f}`\n"
+            f"🎯 *Target Price:* `{product['currency']}{target_price:,.2f}`\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"🔔 I will notify you the moment the price drops to or below your target!"
+        )
+        if query.message.photo:
+            await query.edit_message_caption(confirm, parse_mode=ParseMode.MARKDOWN)
         else:
-            await query.edit_message_text(f"❌ Alert `#{alert_id}` was already removed.", parse_mode=ParseMode.MARKDOWN)
-    elif data == "list_alerts":
-        await list_alerts_command(update, context)
-    elif data == "view_watchlist":
-        await watchlist_command(update, context)
+            await query.edit_message_text(confirm, parse_mode=ParseMode.MARKDOWN)
+
+    elif data.startswith("del_"):
+        product_id = int(data.split("_")[1])
+        success = database.delete_tracked_product(product_id, user_id=query.from_user.id)
+        if success:
+            await query.message.reply_text(f"✅ Product `#{product_id}` tracking stopped.", parse_mode=ParseMode.MARKDOWN)
+        else:
+            await query.message.reply_text(f"❌ Product `#{product_id}` was already removed.", parse_mode=ParseMode.MARKDOWN)
+
+    elif data == "list_products":
+        await list_products_command(update, context)
+
     elif data == "help_menu":
         await help_command(update, context)
+
     elif data == "clear_all":
-        count = database.clear_user_alerts(query.from_user.id)
-        await query.edit_message_text(f"🗑️ Cleared all {count} alerts.")
+        count = database.clear_user_products(query.from_user.id)
+        await query.message.reply_text(f"🗑️ Cleared all {count} tracked product(s).")
 
 
 # ---------------------------------------------------------
-# Background Job: Target Price Monitor
+# Background Job: Amazon Price Drop Monitor
 # ---------------------------------------------------------
 
-async def check_price_alerts_job(context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Background job that polls active alerts against live market prices."""
-    alerts = database.get_all_active_alerts()
-    if not alerts:
+async def check_amazon_prices_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Background worker that polls active tracked products for price drops.
+    Dispatches notifications when current_price <= target_price.
+    """
+    products = database.get_all_active_products()
+    if not products:
         return
 
-    distinct_symbols = list({a["symbol"] for a in alerts})
-    quotes: Dict[str, Any] = {}
+    logger.info(f"Checking prices for {len(products)} active tracked product(s)...")
 
-    for sym in distinct_symbols:
-        q = stock_service.get_stock_quote(sym)
-        if q:
-            quotes[sym] = q
+    # Group by ASIN to avoid duplicate scraping requests
+    asin_map: Dict[str, list] = {}
+    for p in products:
+        asin_map.setdefault(p["asin"], []).append(p)
 
-    for alert in alerts:
-        sym = alert["symbol"]
-        if sym not in quotes:
+    for asin, items in asin_map.items():
+        sample = items[0]
+        prod_data = amazon_service.fetch_amazon_product(sample["url"])
+        if not prod_data or not prod_data.get("price"):
             continue
 
-        q = quotes[sym]
-        current_price = q["price"]
-        target_price = alert["target_price"]
-        condition = alert["condition"]
-        chat_id = alert["chat_id"]
-        currency = alert["currency"] or q["currency"]
+        new_price = prod_data["price"]
 
-        triggered = False
-        if condition == "ABOVE" and current_price >= target_price:
-            triggered = True
-        elif condition == "BELOW" and current_price <= target_price:
-            triggered = True
+        for item in items:
+            product_id = item["id"]
+            target_price = item["target_price"]
+            chat_id = item["chat_id"]
+            currency = item["currency"]
+            title = prod_data["title"]
+            url = prod_data["url"]
+            image_url = prod_data.get("image_url")
 
-        if triggered:
-            database.mark_alert_triggered(alert["id"], current_price)
-            logger.info(f"Target triggered: Alert #{alert['id']} for {sym} at {current_price} (Target: {target_price})")
+            # Update latest price in DB
+            database.update_product_price(product_id, new_price)
 
-            emoji = "🚀 📈" if condition == "ABOVE" else "📉 ⚠️"
-            condition_text = "hit or exceeded" if condition == "ABOVE" else "dropped to or below"
+            # Check if Price Drop Target Reached
+            if new_price <= target_price:
+                database.mark_product_triggered(product_id, new_price)
+                logger.info(f"Price Drop Triggered: #{product_id} ({asin}) at {new_price} (Target: {target_price})")
 
-            alert_msg = (
-                f"{emoji} *PRICE TARGET TRIGGERED!* {emoji}\n"
-                f"━━━━━━━━━━━━━━━━━━━\n"
-                f"🏷️ *Asset:* `{sym}` ({q['name']})\n"
-                f"🎯 *Target Price:* `{target_price} {currency}`\n"
-                f"💰 *Current Price:* `{current_price} {currency}`\n"
-                f"📊 *Triggered Condition:* Price {condition_text} your target!\n"
-                f"━━━━━━━━━━━━━━━━━━━\n"
-                f"_Alert ID: #{alert['id']}_"
-            )
+                savings = item["initial_price"] - new_price
+                savings_pct = (savings / item["initial_price"] * 100) if item["initial_price"] > 0 else 0
 
-            keyboard = [
-                [
-                    InlineKeyboardButton(f"📈 Quote {sym}", callback_data=f"price_{sym}"),
-                    InlineKeyboardButton("📊 View Chart", callback_data=f"chart_{sym}"),
-                ]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-
-            try:
-                await context.bot.send_message(
-                    chat_id=chat_id,
-                    text=alert_msg,
-                    parse_mode=ParseMode.MARKDOWN,
-                    reply_markup=reply_markup,
+                alert_text = (
+                    f"🎉🚨 *PRICE DROP ALERT!* 🚨🎉\n"
+                    f"━━━━━━━━━━━━━━━━━━━\n"
+                    f"📦 *{title[:75]}...*\n\n"
+                    f"🔥 *New Price:* `{currency}{new_price:,.2f}`\n"
+                    f"🎯 *Your Target:* `{currency}{target_price:,.2f}`\n"
+                    f"💰 *You Save:* `{currency}{savings:,.2f} ({savings_pct:.1f}% OFF)`\n"
+                    f"━━━━━━━━━━━━━━━━━━━\n"
+                    f"⚡ Grab it before the deal ends!"
                 )
-            except Exception as e:
-                logger.error(f"Failed to send notification to chat {chat_id}: {e}")
+
+                keyboard = [
+                    [InlineKeyboardButton("🛒 Buy Now on Amazon", url=url)]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+
+                try:
+                    if image_url:
+                        await context.bot.send_photo(
+                            chat_id=chat_id,
+                            photo=image_url,
+                            caption=alert_text,
+                            parse_mode=ParseMode.MARKDOWN,
+                            reply_markup=reply_markup,
+                        )
+                    else:
+                        await context.bot.send_message(
+                            chat_id=chat_id,
+                            text=alert_text,
+                            parse_mode=ParseMode.MARKDOWN,
+                            reply_markup=reply_markup,
+                        )
+                except Exception as e:
+                    logger.error(f"Failed to dispatch alert to chat {chat_id}: {e}")
 
 
 # ---------------------------------------------------------
@@ -691,45 +507,44 @@ async def check_price_alerts_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 # ---------------------------------------------------------
 
 def main() -> None:
-    """Initialize and run the Telegram bot."""
+    """Initialize and run the Amazon Price Drop Tracker Bot."""
     if not BOT_TOKEN:
         print("❌ Error: TELEGRAM_BOT_TOKEN is not set in .env file!")
         return
 
+    # Initialize SQLite database
     database.init_db()
-    logger.info("Database initialized successfully.")
+    logger.info("Amazon Tracker Database initialized successfully.")
 
+    # Build Application
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     # Commands
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("price", price_command))
-    app.add_handler(CommandHandler("quote", price_command))
-    app.add_handler(CommandHandler("alert", alert_command))
-    app.add_handler(CommandHandler("alerts", list_alerts_command))
-    app.add_handler(CommandHandler("myalerts", list_alerts_command))
-    app.add_handler(CommandHandler("delalert", delalert_command))
-    app.add_handler(CommandHandler("clearalerts", clearalerts_command))
-    app.add_handler(CommandHandler("chart", chart_command))
-    app.add_handler(CommandHandler("ta", ta_command))
-    app.add_handler(CommandHandler("news", news_command))
-    app.add_handler(CommandHandler("watchlist", watchlist_command))
-    app.add_handler(CommandHandler("addwatch", addwatch_command))
-    app.add_handler(CommandHandler("delwatch", delwatch_command))
+    app.add_handler(CommandHandler("track", track_command))
+    app.add_handler(CommandHandler("alert", track_command))
+    app.add_handler(CommandHandler("products", list_products_command))
+    app.add_handler(CommandHandler("alerts", list_products_command))
+    app.add_handler(CommandHandler("tracked", list_products_command))
+    app.add_handler(CommandHandler("deltrack", deltrack_command))
+    app.add_handler(CommandHandler("cleartrack", cleartrack_command))
 
     # Interactive button handler
     app.add_handler(CallbackQueryHandler(callback_handler))
 
-    # Scheduler Job
-    if app.job_queue:
-        app.job_queue.run_repeating(check_price_alerts_job, interval=60, first=10)
-        logger.info("Target price alert background job registered (60s interval).")
+    # Direct message handler (Auto-detects when an Amazon link is pasted)
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_amazon_url_message))
 
-    print("\n" + "=" * 50)
-    print("🤖 StockMightyBot (@Stockmightybot) is running!")
-    print("=" * 50)
-    print("Listening for messages and monitoring target price alerts...\n")
+    # Background Job: Polls Amazon prices (every 5 minutes = 300 seconds)
+    if app.job_queue:
+        app.job_queue.run_repeating(check_amazon_prices_job, interval=300, first=15)
+        logger.info("Amazon price drop background job registered (300s interval).")
+
+    print("\n" + "=" * 55)
+    print("🛍️ Amazon Price Drop Tracker Bot (@Stockmightybot) Live!")
+    print("=" * 55)
+    print("Monitoring Amazon products and listening for link inputs...\n")
 
     app.run_polling(drop_pending_updates=True)
 

@@ -1,4 +1,4 @@
-"""Database management module for StockMightyBot alerts and watchlists."""
+"""Database management module for Amazon Price Drop Tracker Bot."""
 
 import sqlite3
 import os
@@ -15,86 +15,87 @@ def get_db_connection() -> sqlite3.Connection:
 
 
 def init_db() -> None:
-    """Initialize SQLite tables for alerts and watchlists."""
+    """Initialize SQLite tables for Amazon product tracking."""
     with get_db_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
             """
-            CREATE TABLE IF NOT EXISTS alerts (
+            CREATE TABLE IF NOT EXISTS tracked_products (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
                 chat_id INTEGER NOT NULL,
-                symbol TEXT NOT NULL,
+                asin TEXT NOT NULL,
+                title TEXT NOT NULL,
+                url TEXT NOT NULL,
+                image_url TEXT,
                 target_price REAL NOT NULL,
-                condition TEXT NOT NULL, -- 'ABOVE' or 'BELOW'
                 initial_price REAL NOT NULL,
-                currency TEXT DEFAULT 'USD',
+                current_price REAL NOT NULL,
+                currency TEXT DEFAULT '₹',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_checked_at TIMESTAMP NULL,
                 is_active INTEGER DEFAULT 1,
-                triggered_at TIMESTAMP NULL,
-                trigger_price REAL NULL
+                triggered_at TIMESTAMP NULL
             )
             """
         )
         cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS watchlist (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                symbol TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(user_id, symbol)
-            )
-            """
+            "CREATE INDEX IF NOT EXISTS idx_products_active ON tracked_products (is_active)"
         )
         cursor.execute(
-            "CREATE INDEX IF NOT EXISTS idx_alerts_active ON alerts (is_active)"
-        )
-        cursor.execute(
-            "CREATE INDEX IF NOT EXISTS idx_alerts_user ON alerts (user_id, is_active)"
-        )
-        cursor.execute(
-            "CREATE INDEX IF NOT EXISTS idx_watchlist_user ON watchlist (user_id)"
+            "CREATE INDEX IF NOT EXISTS idx_products_user ON tracked_products (user_id, is_active)"
         )
         conn.commit()
 
 
-# ---------------------------------------------------------
-# Alerts Methods
-# ---------------------------------------------------------
-
-def add_alert(
+def add_tracked_product(
     user_id: int,
     chat_id: int,
-    symbol: str,
+    asin: str,
+    title: str,
+    url: str,
+    image_url: Optional[str],
     target_price: float,
-    condition: str,
-    initial_price: float,
-    currency: str = "USD",
+    current_price: float,
+    currency: str = "₹",
 ) -> int:
-    """Add a new price alert to the database."""
-    symbol = symbol.strip().upper()
+    """Add a new product price drop alert to the database."""
     with get_db_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
             """
-            INSERT INTO alerts (user_id, chat_id, symbol, target_price, condition, initial_price, currency, is_active)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+            INSERT INTO tracked_products (
+                user_id, chat_id, asin, title, url, image_url,
+                target_price, initial_price, current_price, currency, is_active
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
             """,
-            (user_id, chat_id, symbol, target_price, condition, initial_price, currency),
+            (
+                user_id,
+                chat_id,
+                asin,
+                title,
+                url,
+                image_url,
+                target_price,
+                current_price,
+                current_price,
+                currency,
+            ),
         )
         conn.commit()
         return cursor.lastrowid
 
 
-def get_user_alerts(user_id: int) -> List[Dict[str, Any]]:
-    """Retrieve all active alerts for a specific user."""
+def get_user_products(user_id: int) -> List[Dict[str, Any]]:
+    """Retrieve all active tracked products for a specific user."""
     with get_db_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
             """
-            SELECT id, user_id, chat_id, symbol, target_price, condition, initial_price, currency, created_at
-            FROM alerts
+            SELECT id, user_id, chat_id, asin, title, url, image_url,
+                   target_price, initial_price, current_price, currency, created_at
+            FROM tracked_products
             WHERE user_id = ? AND is_active = 1
             ORDER BY created_at DESC
             """,
@@ -103,106 +104,78 @@ def get_user_alerts(user_id: int) -> List[Dict[str, Any]]:
         return [dict(row) for row in cursor.fetchall()]
 
 
-def get_all_active_alerts() -> List[Dict[str, Any]]:
-    """Retrieve all active alerts across all users for background checking."""
+def get_all_active_products() -> List[Dict[str, Any]]:
+    """Retrieve all active tracked products across all users for background checking."""
     with get_db_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
             """
-            SELECT id, user_id, chat_id, symbol, target_price, condition, initial_price, currency
-            FROM alerts
+            SELECT id, user_id, chat_id, asin, title, url, image_url,
+                   target_price, initial_price, current_price, currency
+            FROM tracked_products
             WHERE is_active = 1
             """
         )
         return [dict(row) for row in cursor.fetchall()]
 
 
-def delete_alert(alert_id: int, user_id: Optional[int] = None) -> bool:
-    """Delete (deactivate) an alert by ID, optionally verifying ownership."""
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        if user_id is not None:
-            cursor.execute(
-                "UPDATE alerts SET is_active = 0 WHERE id = ? AND user_id = ?",
-                (alert_id, user_id),
-            )
-        else:
-            cursor.execute(
-                "UPDATE alerts SET is_active = 0 WHERE id = ?",
-                (alert_id,),
-            )
-        conn.commit()
-        return cursor.rowcount > 0
-
-
-def clear_user_alerts(user_id: int) -> int:
-    """Clear all active alerts for a user."""
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            "UPDATE alerts SET is_active = 0 WHERE user_id = ? AND is_active = 1",
-            (user_id,),
-        )
-        conn.commit()
-        return cursor.rowcount
-
-
-def mark_alert_triggered(alert_id: int, trigger_price: float) -> None:
-    """Mark an alert as triggered so it won't fire repeatedly."""
+def update_product_price(product_id: int, new_price: float) -> None:
+    """Update the latest known price for a tracked product."""
     with get_db_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
             """
-            UPDATE alerts
-            SET is_active = 0,
-                triggered_at = CURRENT_TIMESTAMP,
-                trigger_price = ?
+            UPDATE tracked_products
+            SET current_price = ?, last_checked_at = CURRENT_TIMESTAMP
             WHERE id = ?
             """,
-            (trigger_price, alert_id),
+            (new_price, product_id),
         )
         conn.commit()
 
 
-# ---------------------------------------------------------
-# Watchlist Methods
-# ---------------------------------------------------------
-
-def add_to_watchlist(user_id: int, symbol: str) -> bool:
-    """Add a symbol to user's watchlist."""
-    symbol = symbol.strip().upper()
+def mark_product_triggered(product_id: int, drop_price: float) -> None:
+    """Mark a product alert as triggered so user is not repeatedly spammed."""
     with get_db_connection() as conn:
         cursor = conn.cursor()
-        try:
+        cursor.execute(
+            """
+            UPDATE tracked_products
+            SET is_active = 0,
+                current_price = ?,
+                triggered_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (drop_price, product_id),
+        )
+        conn.commit()
+
+
+def delete_tracked_product(product_id: int, user_id: Optional[int] = None) -> bool:
+    """Delete (deactivate) a tracked product by ID."""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        if user_id is not None:
             cursor.execute(
-                "INSERT INTO watchlist (user_id, symbol) VALUES (?, ?)",
-                (user_id, symbol),
+                "UPDATE tracked_products SET is_active = 0 WHERE id = ? AND user_id = ?",
+                (product_id, user_id),
             )
-            conn.commit()
-            return True
-        except sqlite3.IntegrityError:
-            return False  # Already in watchlist
-
-
-def get_user_watchlist(user_id: int) -> List[str]:
-    """Get all symbols in user's watchlist."""
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT symbol FROM watchlist WHERE user_id = ? ORDER BY created_at ASC",
-            (user_id,),
-        )
-        return [row["symbol"] for row in cursor.fetchall()]
-
-
-def remove_from_watchlist(user_id: int, symbol: str) -> bool:
-    """Remove a symbol from user's watchlist."""
-    symbol = symbol.strip().upper()
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            "DELETE FROM watchlist WHERE user_id = ? AND symbol = ?",
-            (user_id, symbol),
-        )
+        else:
+            cursor.execute(
+                "UPDATE tracked_products SET is_active = 0 WHERE id = ?",
+                (product_id,),
+            )
         conn.commit()
         return cursor.rowcount > 0
+
+
+def clear_user_products(user_id: int) -> int:
+    """Clear all active tracked products for a user."""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE tracked_products SET is_active = 0 WHERE user_id = ? AND is_active = 1",
+            (user_id,),
+        )
+        conn.commit()
+        return cursor.rowcount

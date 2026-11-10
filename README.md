@@ -1,37 +1,28 @@
-# StockMightyBot (@Stockmightybot) 📈🤖
+# Amazon Price Drop Tracker Bot 🛍️📉
 
-A full-featured Telegram stock market assistant that delivers real-time stock prices, technical trend charts, automated target price alerts, technical indicators (RSI & SMA), market news, and personal watchlists directly to your Telegram chat.
+A full-featured Telegram bot that tracks Amazon product prices in real time and automatically sends you an instant Telegram notification whenever an item drops to or below your desired target price.
 
 ---
 
 ## 🌟 Key Features
 
-1. **🔔 Target Price Alerts (Automatic Above/Below Detection)**
-   - Set a target price for any asset: `/alert <SYMBOL> <TARGET_PRICE>`
-   - Automatically determines whether your target is above (bullish target) or below (stop-loss/dip target) the current price.
-   - Runs a 24/7 background monitor that checks live prices every 60 seconds and immediately sends you an alert notification when the price reaches your target!
+1. **🔗 Universal Amazon Link Support**
+   - Works with **Amazon India (`amazon.in`)** and **Amazon US / Global (`amazon.com`)**.
+   - Supports regular product URLs (`/dp/...`, `/gp/product/...`) and mobile short links (`amzn.in/d/...`, `amzn.to/...`).
 
-2. **💰 Real-time Quotes & Crypto Auto-Resolution**
-   - Query global stocks, Indian stocks (NSE/BSE), commodities, and crypto.
-   - Automatically maps crypto pairs: `btcusd`, `btcusdt`, `btc` ➔ `BTC-USD`.
-   - Displays current price, daily gain/loss ($ and %), day high, day low, and previous close.
+2. **⚡ Seamless 1-Click Tracking**
+   - **Method A:** Just paste or share any Amazon product link into the chat! The bot automatically fetches the product image, title, and current price, and displays quick 1-click discount buttons (`5% Drop`, `10% Drop`, `15% Drop`).
+   - **Method B:** Use `/track <AMAZON_URL> <TARGET_PRICE>` to set an exact target price.
 
-3. **📊 Technical Analysis (`/ta`)**
-   - Calculates **RSI (14-day)** with overbought/oversold status.
-   - Computes **50-day & 200-day Simple Moving Averages (SMA)**.
-   - Provides overall technical sentiment (🟢 Bullish / 🟡 Neutral / 🔴 Bearish).
+3. **⏰ Background Price Monitoring**
+   - Runs a 24/7 background scheduler checking all active tracked items.
+   - When the price drops to or below your target, you receive an instant alert with product photo, amount saved, and direct link to buy.
 
-4. **📰 Market News (`/news`)**
-   - Fetches the latest 4 market headlines with direct article links and publishers.
+4. **📋 Tracked Items Dashboard**
+   - Run `/products` or `/alerts` to see all items you are monitoring, current vs target prices, and 1-click buttons to stop tracking.
 
-5. **⭐ Personal Watchlist (`/watchlist`)**
-   - Save your favorite assets (`/addwatch <SYMBOL>`) and view them in a single dashboard with live prices and daily % changes.
-
-6. **📈 Interactive Charts (`/chart`)**
-   - High-resolution dark-themed trend charts rendered via Matplotlib (`1d`, `5d`, `1mo`, `3mo`, `1y`).
-
-7. **💾 Persistent SQLite Database**
-   - Alerts and watchlists survive bot restarts and crashes via a local SQLite database (`alerts.db`).
+5. **💾 SQLite Persistent Storage**
+   - Products and alerts survive bot restarts and crashes via local SQLite (`alerts.db`).
 
 ---
 
@@ -39,27 +30,21 @@ A full-featured Telegram stock market assistant that delivers real-time stock pr
 
 | Command | Description | Example |
 |---|---|---|
-| `/start` | Welcome message and interactive quick-start menu | `/start` |
-| `/help` | Detailed instructions and syntax guide | `/help` |
-| `/price <SYMBOL>` | Real-time quote for any stock or crypto | `/price NIFTY 50`<br>`/price btcusd`<br>`/price AAPL` |
-| `/alert <SYMBOL> <TARGET>` | Set target price alert (auto-detects above/below) | `/alert btcusd 74320`<br>`/alert NIFTY 50 25044`<br>`/alert TSLA 250` |
-| `/alerts` | View your active alerts with 1-click delete | `/alerts` |
-| `/delalert <ID>` | Delete an alert by ID | `/delalert 2` |
-| `/clearalerts` | Delete all active alerts | `/clearalerts` |
-| `/chart <SYMBOL> [PERIOD]` | Send price chart image (1d, 5d, 1mo, 3mo, 1y) | `/chart NVDA 1mo`<br>`/chart btcusd 3mo` |
-| `/ta <SYMBOL>` | Technical analysis (RSI, 50 & 200 SMA, Sentiment) | `/ta btcusd`<br>`/ta NIFTY 50` |
-| `/news <SYMBOL>` | Latest market headlines with links | `/news RELIANCE`<br>`/news TSLA` |
-| `/watchlist` | View your personal watchlist dashboard | `/watchlist` |
-| `/addwatch <SYMBOL>` | Add asset to personal watchlist | `/addwatch btcusd`<br>`/addwatch TCS` |
-| `/delwatch <SYMBOL>` | Remove asset from personal watchlist | `/delwatch TCS` |
+| `/start` | Launch menu & instructions | `/start` |
+| `/track <URL> <PRICE>` | Track an Amazon item at target price | `/track https://www.amazon.in/dp/B09G9BL5CP 75000` |
+| `/products` | View and manage all your tracked items | `/products` |
+| `/deltrack <ID>` | Stop tracking a specific item | `/deltrack 1` |
+| `/cleartrack` | Stop tracking all items | `/cleartrack` |
+| `/help` | Detailed instructions & examples | `/help` |
 
 ---
 
 ## 🚀 Deployment
 
-The bot includes deployment blueprints for 24/7 cloud hosting:
-- `Procfile` & `render.yaml` — Ready for **Render** or **Railway**
-- `Dockerfile` — Ready for **Fly.io**, **Railway**, **DigitalOcean**, or any VPS
+The bot includes deployment blueprints for 24/7 cloud hosting on **Railway**, **Render**, or any Docker host:
+- `Procfile` & `render.yaml` — Configured for cloud workers
+- `Dockerfile` — Ready for containerized deployment
+- `requirements.txt` — Dependencies (`python-telegram-bot[job-queue]`, `curl_cffi`, `beautifulsoup4`, `lxml`, `python-dotenv`)
 
 ---
 
@@ -70,9 +55,9 @@ C:\Users\xMonks\TB\
 ├── .env                # Bot token & configuration (hidden/git-ignored)
 ├── .env.example        # Configuration template
 ├── .gitignore          # Git exclusion rules
-├── bot.py              # Main Telegram bot runtime, handlers & background scheduler
-├── database.py         # SQLite database models for alerts and watchlists
-├── stock_service.py    # Quotes, charts, technical indicators & news fetcher
+├── bot.py              # Telegram bot runtime, handlers & price monitor
+├── database.py         # SQLite database models for tracked products
+├── amazon_service.py   # Amazon product scraper with curl_cffi browser impersonation
 ├── Dockerfile          # Container configuration
 ├── Procfile            # Cloud process definition
 ├── render.yaml         # Blueprint for Render
