@@ -476,8 +476,12 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     elif data.startswith("del_"):
         product_id = int(data.split("_")[1])
         success = database.delete_tracked_product(product_id, user_id=query.from_user.id)
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
         if success:
-            await query.message.reply_text(f"✅ Product <code>#{product_id}</code> tracking stopped.", parse_mode=ParseMode.HTML)
+            await query.message.reply_text(f"🛑 Tracking stopped for product <code>#{product_id}</code>.", parse_mode=ParseMode.HTML)
         else:
             await query.message.reply_text(f"❌ Product <code>#{product_id}</code> was already removed.", parse_mode=ParseMode.HTML)
 
@@ -535,6 +539,16 @@ async def check_prices_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 
                 database.update_product_price(product_id, new_price)
 
+                title_escaped = html.escape(title[:75])
+                badge_escaped = html.escape(badge)
+
+                # Interactive buttons: Direct Link + One-Click Stop Tracking
+                keyboard = [
+                    [InlineKeyboardButton(f"🛒 {'Buy Now on' if new_price <= target_price else 'View on'} {platform}", url=prod_url)],
+                    [InlineKeyboardButton("🛑 Stop Tracking", callback_data=f"del_{product_id}")]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+
                 if new_price <= target_price:
                     database.mark_product_triggered(product_id, new_price)
                     logger.info(f"Price Drop Triggered: #{product_id} on {platform} at {new_price} (Target: {target_price})")
@@ -542,52 +556,56 @@ async def check_prices_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                     savings = item["initial_price"] - new_price
                     savings_pct = (savings / item["initial_price"] * 100) if item["initial_price"] > 0 else 0
 
-                    title_escaped = html.escape(title[:75])
-                    badge_escaped = html.escape(badge)
-
-                    alert_text = (
-                        f"🎉🚨 <b>{badge_escaped} PRICE DROP ALERT!</b> 🚨🎉\n"
+                    update_text = (
+                        f"🎉🚨 <b>{badge_escaped} PRICE DROP TARGET REACHED!</b> 🚨🎉\n"
                         f"━━━━━━━━━━━━━━━━━━━\n"
                         f"📦 <b>{title_escaped}...</b>\n\n"
-                        f"🔥 <b>New Price:</b> <code>{currency}{new_price:,.2f}</code>\n"
+                        f"🔥 <b>Current Price:</b> <code>{currency}{new_price:,.2f}</code>\n"
                         f"🎯 <b>Your Target:</b> <code>{currency}{target_price:,.2f}</code>\n"
                         f"💰 <b>You Save:</b> <code>{currency}{savings:,.2f} ({savings_pct:.1f}% OFF)</code>\n"
                         f"━━━━━━━━━━━━━━━━━━━\n"
-                        f"⚡ Grab it before the deal ends!"
+                        f"⚡ Target price reached! Click below to buy or stop tracking."
+                    )
+                else:
+                    diff = new_price - target_price
+                    update_text = (
+                        f"📊 <b>{badge_escaped} Price Check Update</b> (ID: <code>#{product_id}</code>)\n"
+                        f"━━━━━━━━━━━━━━━━━━━\n"
+                        f"📦 <b>{title_escaped}...</b>\n\n"
+                        f"💰 <b>Current Price:</b> <code>{currency}{new_price:,.2f}</code>\n"
+                        f"🎯 <b>Desired Set Price:</b> <code>{currency}{target_price:,.2f}</code>\n"
+                        f"📈 <b>Difference:</b> <code>{currency}{diff:,.2f}</code> above your target\n"
+                        f"━━━━━━━━━━━━━━━━━━━\n"
+                        f"🕒 <i>Next automated check in 4 hours.</i>"
                     )
 
-                    keyboard = [
-                        [InlineKeyboardButton(f"🛒 Buy Now on {platform}", url=prod_url)]
-                    ]
-                    reply_markup = InlineKeyboardMarkup(keyboard)
-
+                try:
+                    if image_url:
+                        await context.bot.send_photo(
+                            chat_id=chat_id,
+                            photo=image_url,
+                            caption=safe_caption(update_text),
+                            parse_mode=ParseMode.HTML,
+                            reply_markup=reply_markup,
+                        )
+                    else:
+                        await context.bot.send_message(
+                            chat_id=chat_id,
+                            text=update_text,
+                            parse_mode=ParseMode.HTML,
+                            reply_markup=reply_markup,
+                        )
+                except Exception as e:
+                    logger.error(f"Failed to dispatch photo update, trying text: {e}")
                     try:
-                        if image_url:
-                            await context.bot.send_photo(
-                                chat_id=chat_id,
-                                photo=image_url,
-                                caption=safe_caption(alert_text),
-                                parse_mode=ParseMode.HTML,
-                                reply_markup=reply_markup,
-                            )
-                        else:
-                            await context.bot.send_message(
-                                chat_id=chat_id,
-                                text=alert_text,
-                                parse_mode=ParseMode.HTML,
-                                reply_markup=reply_markup,
-                            )
-                    except Exception as e:
-                        logger.error(f"Failed to dispatch photo alert, trying text: {e}")
-                        try:
-                            await context.bot.send_message(
-                                chat_id=chat_id,
-                                text=alert_text,
-                                parse_mode=ParseMode.HTML,
-                                reply_markup=reply_markup,
-                            )
-                        except Exception as text_e:
-                            logger.error(f"Failed to dispatch text alert to chat {chat_id}: {text_e}")
+                        await context.bot.send_message(
+                            chat_id=chat_id,
+                            text=update_text,
+                            parse_mode=ParseMode.HTML,
+                            reply_markup=reply_markup,
+                        )
+                    except Exception as text_e:
+                        logger.error(f"Failed to dispatch text update to chat {chat_id}: {text_e}")
 
             # Randomized human-like jitter delay between product URLs to prevent platform rate limits
             await asyncio.sleep(random.uniform(1.5, 3.5))
@@ -628,11 +646,11 @@ def main() -> None:
     # Direct message handler (Auto-detects when a product link is pasted)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url_message))
 
-    # Background Job: Configurable polling interval (default: 900s / 15 minutes)
-    poll_interval = int(os.getenv("CHECK_INTERVAL", 900))
+    # Background Job: Configurable polling interval (default: 14400s / 4 hours)
+    poll_interval = int(os.getenv("CHECK_INTERVAL", 14400))
     if app.job_queue:
         app.job_queue.run_repeating(check_prices_job, interval=poll_interval, first=15)
-        logger.info(f"Price drop background job registered ({poll_interval}s interval).")
+        logger.info(f"Price drop background job registered ({poll_interval}s interval - every {poll_interval // 3600} hours).")
 
     print("\n" + "=" * 65)
     print("🛍️ Multi-Platform Price Drop Bot (@Stockmightybot) Live!")
