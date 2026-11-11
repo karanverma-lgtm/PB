@@ -23,6 +23,31 @@ from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
+# Camoufox stealth browser integration (C++ engine level anti-bot bypass)
+try:
+    from camoufox.sync_api import Camoufox
+    CAMOUFOX_AVAILABLE = True
+except Exception:
+    CAMOUFOX_AVAILABLE = False
+
+
+def fetch_page_with_camoufox(url: str, timeout_ms: int = 25000) -> Optional[str]:
+    """Render full dynamic JavaScript page using Camoufox stealth browser to bypass WAF / CAPTCHAs."""
+    if not CAMOUFOX_AVAILABLE:
+        return None
+    try:
+        logger.info(f"🦊 Invoking Camoufox stealth browser for {url[:60]}...")
+        with Camoufox(headless=True, humanize=True) as browser:
+            page = browser.new_page()
+            page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+            page.wait_for_timeout(2000)
+            rendered = page.content()
+            if rendered and len(rendered) > 500:
+                return rendered
+    except Exception as e:
+        logger.debug(f"Camoufox stealth fetch failed for {url[:60]}: {e}")
+    return None
+
 # Default realistic browser headers with metro pincode cookies for Indian e-commerce
 HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
@@ -170,8 +195,119 @@ def extract_amazon_asin(text: str) -> Optional[str]:
     return None
 
 
+def parse_amazon_soup(soup: BeautifulSoup, asin: str, canonical_url: str) -> Optional[Dict[str, Any]]:
+    """Parse product title, price, currency, and image from Amazon HTML BeautifulSoup."""
+    title = None
+    for t_sel in ["span#productTitle", "h1#title", "span#title", "h1.a-size-large"]:
+        elem = soup.select_one(t_sel)
+        if elem and elem.get_text(strip=True):
+            title = elem.get_text(strip=True)
+            break
+
+    if not title:
+        og_title = soup.find("meta", property="og:title") or soup.find("meta", attrs={"name": "title"})
+        if og_title and og_title.get("content"):
+            title = og_title.get("content").replace("Amazon.in:", "").replace("Amazon.com:", "").strip()
+
+    if not title and soup.title:
+        raw_t = soup.title.get_text(strip=True)
+        if raw_t and "Robot Check" not in raw_t and "Page Not Found" not in raw_t:
+            title = raw_t.replace("Amazon.in:", "").replace("Amazon.com:", "").strip()
+
+    if not title:
+        return None
+
+    # Price Extraction
+    price = None
+    currency = "₹" if "amazon.in" in canonical_url else "$"
+
+    # Whole + Fraction
+    price_whole = soup.find("span", class_="a-price-whole")
+    price_fraction = soup.find("span", class_="a-price-fraction")
+    if price_whole:
+        p_str = price_whole.get_text(strip=True).replace(",", "").replace(".", "").strip()
+        if p_str.isdigit():
+            frac = price_fraction.get_text(strip=True) if price_fraction else "00"
+            frac = frac if frac.isdigit() else "00"
+            price = float(f"{p_str}.{frac}")
+
+    # Selectors fallback
+    if price is None:
+        for selector in [
+            "span.priceToPay span.a-offscreen",
+            "span.apexPriceToPay span.a-offscreen",
+            "div#corePrice_desktop span.a-price-whole",
+            "div#corePrice_mobile_feature_div span.a-price-whole",
+            "div#corePriceDisplay_desktop_feature_div span.a-price-whole",
+            "span.a-price.a-text-price span.a-offscreen",
+            "span#priceblock_ourprice",
+            "span#priceblock_dealprice",
+            "span#priceblock_saleprice",
+            "span.a-price span.a-offscreen",
+            "span.a-color-price",
+        ]:
+            elem = soup.select_one(selector)
+            if elem:
+                txt = elem.get_text(strip=True)
+                match = re.search(r"[\d,]+(?:\.\d+)?", txt)
+                if match:
+                    val = float(match.group(0).replace(",", ""))
+                    if val > 0:
+                        price = val
+                        break
+
+    # Hidden inputs / data attributes fallback
+    if price is None:
+        for input_name in ["displayedPrice", "items[0][price]", "twister-plus-price-data"]:
+            inp = soup.find("input", attrs={"name": input_name})
+            if inp and inp.get("value"):
+                m = re.search(r"[\d,]+(?:\.\d+)?", inp.get("value"))
+                if m:
+                    val = float(m.group(0).replace(",", ""))
+                    if val > 0:
+                        price = val
+                        break
+
+    # Buybox regex search fallback
+    if price is None:
+        price_div = soup.find("div", id=re.compile(r"corePrice|apex_desktop|desktop_unifiedPrice|buybox|mobile_unifiedPrice"))
+        if price_div:
+            matches = re.findall(r"[₹\$]\s*([\d,]+(?:\.\d+)?)", price_div.get_text())
+            if matches:
+                val = float(matches[0].replace(",", ""))
+                if val > 0:
+                    price = val
+
+    if price is None:
+        return None
+
+    # Currency symbol
+    sym_elem = soup.find("span", class_="a-price-symbol")
+    if sym_elem and sym_elem.get_text(strip=True):
+        currency = sym_elem.get_text(strip=True)
+
+    # Image extraction
+    img_elem = soup.find("img", id="landingImage") or soup.find("img", id="imgBlkFront") or soup.find("img", id="main-image")
+    img_url = img_elem.get("src") if img_elem else None
+    if not img_url:
+        og_img = soup.find("meta", property="og:image")
+        if og_img and og_img.get("content"):
+            img_url = og_img.get("content")
+
+    return {
+        "platform": "Amazon",
+        "platform_badge": "📦 Amazon",
+        "item_id": asin,
+        "title": title,
+        "price": round(price, 2),
+        "currency": currency,
+        "url": canonical_url,
+        "image_url": img_url,
+    }
+
+
 def fetch_amazon_product(url_or_asin: str) -> Optional[Dict[str, Any]]:
-    """Fetch live product details from Amazon with buy-box verification and mobile fallback."""
+    """Fetch live product details from Amazon with buy-box verification and Camoufox stealth escalation."""
     clean_target = clean_url_from_text(url_or_asin)
     try:
         # Resolve short link (amzn.in or amzn.to)
@@ -188,7 +324,7 @@ def fetch_amazon_product(url_or_asin: str) -> Optional[Dict[str, Any]]:
         mobile_url = f"https://www.{domain}/gp/aw/d/{asin}"
 
         res = None
-        # Try desktop and mobile endpoints with rotating browser impersonations
+        # 1. Primary: Try desktop and mobile endpoints with fast TLS browser impersonations
         fetch_attempts = [
             (canonical_url, "chrome124", AMAZON_HEADERS),
             (mobile_url, "chrome120", AMAZON_HEADERS),
@@ -200,9 +336,8 @@ def fetch_amazon_product(url_or_asin: str) -> Optional[Dict[str, Any]]:
             try:
                 r = requests.get(target_url, impersonate=imp, headers=hdrs, timeout=15)
                 if r.status_code == 200:
-                    # Check if response is blocked by CAPTCHA
                     if "api-services-support@amazon.com" in r.text or "validateCaptcha" in r.text:
-                        logger.warning(f"Amazon CAPTCHA on {target_url} ({imp}), trying fallback...")
+                        logger.warning(f"Amazon CAPTCHA on {target_url} ({imp}), trying next profile...")
                         continue
                     res = r
                     break
@@ -212,124 +347,30 @@ def fetch_amazon_product(url_or_asin: str) -> Optional[Dict[str, Any]]:
                 logger.debug(f"Attempt failed for {target_url} ({imp}): {req_err}")
                 time.sleep(0.5)
 
-        if not res or res.status_code != 200:
-            logger.error(f"Amazon HTTP error or bot gate for ASIN {asin}")
-            return None
+        # Parse with BeautifulSoup if curl_cffi succeeded
+        if res and res.status_code == 200:
+            soup = BeautifulSoup(res.text, "html.parser")
+            parsed = parse_amazon_soup(soup, asin, canonical_url)
+            if parsed:
+                return parsed
 
-        soup = BeautifulSoup(res.text, "html.parser")
+        # 2. Automated Secondary Fallback: Camoufox stealth browser (bypasses WAF & solves challenges)
+        if CAMOUFOX_AVAILABLE:
+            logger.info(f"curl_cffi blocked or incomplete for Amazon ({asin}). Escalating to Camoufox stealth browser...")
+            for cam_target in [canonical_url, mobile_url]:
+                cam_html = fetch_page_with_camoufox(cam_target)
+                if cam_html:
+                    soup = BeautifulSoup(cam_html, "html.parser")
+                    parsed = parse_amazon_soup(soup, asin, canonical_url)
+                    if parsed:
+                        logger.info(f"✅ Camoufox successfully resolved Amazon product #{asin}!")
+                        return parsed
 
-        # 1. Title Extraction
-        title = None
-        for t_sel in ["span#productTitle", "h1#title", "span#title", "h1.a-size-large"]:
-            elem = soup.select_one(t_sel)
-            if elem and elem.get_text(strip=True):
-                title = elem.get_text(strip=True)
-                break
-
-        if not title:
-            og_title = soup.find("meta", property="og:title") or soup.find("meta", attrs={"name": "title"})
-            if og_title and og_title.get("content"):
-                title = og_title.get("content").replace("Amazon.in:", "").replace("Amazon.com:", "").strip()
-
-        if not title and soup.title:
-            raw_t = soup.title.get_text(strip=True)
-            if raw_t and "Robot Check" not in raw_t and "Page Not Found" not in raw_t:
-                title = raw_t.replace("Amazon.in:", "").replace("Amazon.com:", "").strip()
-
-        if not title:
-            logger.error(f"Could not find product title on Amazon for {asin}")
-            return None
-
-        # 2. Price Extraction
-        price = None
-        currency = "₹" if "amazon.in" in canonical_url else "$"
-
-        # Whole + Fraction
-        price_whole = soup.find("span", class_="a-price-whole")
-        price_fraction = soup.find("span", class_="a-price-fraction")
-        if price_whole:
-            p_str = price_whole.get_text(strip=True).replace(",", "").replace(".", "").strip()
-            if p_str.isdigit():
-                frac = price_fraction.get_text(strip=True) if price_fraction else "00"
-                frac = frac if frac.isdigit() else "00"
-                price = float(f"{p_str}.{frac}")
-
-        # Selectors fallback
-        if price is None:
-            for selector in [
-                "span.priceToPay span.a-offscreen",
-                "span.apexPriceToPay span.a-offscreen",
-                "div#corePrice_desktop span.a-price-whole",
-                "div#corePrice_mobile_feature_div span.a-price-whole",
-                "div#corePriceDisplay_desktop_feature_div span.a-price-whole",
-                "span.a-price.a-text-price span.a-offscreen",
-                "span#priceblock_ourprice",
-                "span#priceblock_dealprice",
-                "span#priceblock_saleprice",
-                "span.a-price span.a-offscreen",
-                "span.a-color-price",
-            ]:
-                elem = soup.select_one(selector)
-                if elem:
-                    txt = elem.get_text(strip=True)
-                    match = re.search(r"[\d,]+(?:\.\d+)?", txt)
-                    if match:
-                        price = float(match.group(0).replace(",", ""))
-                        break
-
-        # Hidden inputs / data attributes fallback
-        if price is None:
-            for input_name in ["displayedPrice", "items[0][price]", "twister-plus-price-data"]:
-                inp = soup.find("input", attrs={"name": input_name})
-                if inp and inp.get("value"):
-                    m = re.search(r"[\d,]+(?:\.\d+)?", inp.get("value"))
-                    if m:
-                        val = float(m.group(0).replace(",", ""))
-                        if val > 0:
-                            price = val
-                            break
-
-        # Buybox regex search fallback
-        if price is None:
-            price_div = soup.find("div", id=re.compile(r"corePrice|apex_desktop|desktop_unifiedPrice|buybox|mobile_unifiedPrice"))
-            if price_div:
-                matches = re.findall(r"[₹\$]\s*([\d,]+(?:\.\d+)?)", price_div.get_text())
-                if matches:
-                    val = float(matches[0].replace(",", ""))
-                    if val > 0:
-                        price = val
-
-        if price is None:
-            logger.warning(f"Product '{title[:40]}' found but price is unavailable / out of stock.")
-            return None
-
-        # Currency symbol
-        sym_elem = soup.find("span", class_="a-price-symbol")
-        if sym_elem and sym_elem.get_text(strip=True):
-            currency = sym_elem.get_text(strip=True)
-
-        # Image extraction
-        img_elem = soup.find("img", id="landingImage") or soup.find("img", id="imgBlkFront") or soup.find("img", id="main-image")
-        img_url = img_elem.get("src") if img_elem else None
-        if not img_url:
-            og_img = soup.find("meta", property="og:image")
-            if og_img and og_img.get("content"):
-                img_url = og_img.get("content")
-
-        return {
-            "platform": "Amazon",
-            "platform_badge": "📦 Amazon",
-            "item_id": asin,
-            "title": title,
-            "price": round(price, 2),
-            "currency": currency,
-            "url": canonical_url,
-            "image_url": img_url,
-        }
+        logger.error(f"Could not extract Amazon details for ASIN {asin} across all engines")
+        return None
     except Exception as e:
         logger.error(f"Error scraping Amazon: {e}")
         return None
-
 
 # =====================================================================
 # 2. Flipkart Scraper
@@ -346,76 +387,97 @@ def extract_flipkart_id(url: str) -> str:
     return "FLIPKART_ITEM"
 
 
+def parse_flipkart_soup(soup: BeautifulSoup, url: str) -> Optional[Dict[str, Any]]:
+    """Parse product title, price, currency, image, and item ID from Flipkart HTML."""
+    # Title
+    title = None
+    for sel in ["span.VU-ZEz", "span.B_NuCI", "h1 span", "h1"]:
+        elem = soup.select_one(sel)
+        if elem and elem.get_text(strip=True):
+            title = elem.get_text(strip=True)
+            break
+    if not title:
+        og_title = soup.find("meta", property="og:title")
+        if og_title:
+            title = og_title.get("content", "").replace("Online at Best Price in India - Flipkart", "").strip()
+
+    if not title and soup.title:
+        title = soup.title.get_text(strip=True).replace("Online at Best Price in India - Flipkart", "").strip()
+
+    if not title:
+        return None
+
+    # Price
+    price = None
+    p_elem = soup.select_one("div.Nx9bqj") or soup.select_one("div._30jeq3")
+    if p_elem:
+        m = re.search(r"[\d,]+", p_elem.get_text())
+        if m:
+            price = float(m.group(0).replace(",", ""))
+
+    if price is None:
+        for text_node in soup.find_all(string=re.compile(r"₹\s*[\d,]+")):
+            p_text = text_node.strip()
+            if any(w in p_text.lower() for w in ["protect", "fee", "emi", "buy at", "pay", "off"]):
+                continue
+            m = re.search(r"₹\s*([\d,]+)", p_text)
+            if m:
+                val = float(m.group(1).replace(",", ""))
+                if val > 10:
+                    price = val
+                    break
+
+    if price is None:
+        return None
+
+    # Image
+    img_url = None
+    img_matches = re.findall(r"https://rukminim\d*\.flixcart\.com/image/[^\"\'\s]+", str(soup))
+    if img_matches:
+        img_url = img_matches[0]
+
+    item_id = extract_flipkart_id(url)
+
+    return {
+        "platform": "Flipkart",
+        "platform_badge": "🛍️ Flipkart",
+        "item_id": item_id,
+        "title": title,
+        "price": round(price, 2),
+        "currency": "₹",
+        "url": url,
+        "image_url": img_url,
+    }
+
+
 def fetch_flipkart_product(url: str) -> Optional[Dict[str, Any]]:
-    """Fetch live product details from Flipkart."""
+    """Fetch live product details from Flipkart with Camoufox stealth escalation."""
     clean_target = clean_url_from_text(url)
     try:
+        # 1. Primary: Fast TLS curl_cffi fetch
         res = requests.get(clean_target, impersonate="chrome120", headers=HEADERS, allow_redirects=True, timeout=20)
-        if res.status_code != 200:
-            return None
+        if res.status_code == 200:
+            soup = BeautifulSoup(res.text, "html.parser")
+            parsed = parse_flipkart_soup(soup, res.url)
+            if parsed:
+                return parsed
 
-        soup = BeautifulSoup(res.text, "html.parser")
+        # 2. Automated Secondary Fallback: Camoufox stealth browser
+        if CAMOUFOX_AVAILABLE:
+            logger.info(f"curl_cffi failed on Flipkart. Escalating to Camoufox stealth browser...")
+            cam_html = fetch_page_with_camoufox(clean_target)
+            if cam_html:
+                soup = BeautifulSoup(cam_html, "html.parser")
+                parsed = parse_flipkart_soup(soup, clean_target)
+                if parsed:
+                    logger.info(f"✅ Camoufox successfully resolved Flipkart product!")
+                    return parsed
 
-        # Title
-        title = None
-        for sel in ["span.VU-ZEz", "span.B_NuCI", "h1 span", "h1"]:
-            elem = soup.select_one(sel)
-            if elem and elem.get_text(strip=True):
-                title = elem.get_text(strip=True)
-                break
-        if not title:
-            og_title = soup.find("meta", property="og:title")
-            if og_title:
-                title = og_title.get("content", "").replace("Online at Best Price in India - Flipkart", "").strip()
-
-        if not title:
-            return None
-
-        # Price
-        price = None
-        p_elem = soup.select_one("div.Nx9bqj") or soup.select_one("div._30jeq3")
-        if p_elem:
-            m = re.search(r"[\d,]+", p_elem.get_text())
-            if m:
-                price = float(m.group(0).replace(",", ""))
-
-        if price is None:
-            for text_node in soup.find_all(string=re.compile(r"₹\s*[\d,]+")):
-                p_text = text_node.strip()
-                if any(w in p_text.lower() for w in ["protect", "fee", "emi", "buy at", "pay"]):
-                    continue
-                m = re.search(r"₹\s*([\d,]+)", p_text)
-                if m:
-                    val = float(m.group(1).replace(",", ""))
-                    if val > 10:
-                        price = val
-                        break
-
-        if price is None:
-            return None
-
-        # Image
-        img_url = None
-        img_matches = re.findall(r"https://rukminim\d*\.flixcart\.com/image/[^\"\'\s]+", res.text)
-        if img_matches:
-            img_url = img_matches[0]
-
-        item_id = extract_flipkart_id(res.url)
-
-        return {
-            "platform": "Flipkart",
-            "platform_badge": "🛍️ Flipkart",
-            "item_id": item_id,
-            "title": title,
-            "price": round(price, 2),
-            "currency": "₹",
-            "url": res.url,
-            "image_url": img_url,
-        }
+        logger.error(f"Could not extract Flipkart details for {clean_target}")
+        return None
     except Exception as e:
         logger.error(f"Error scraping Flipkart: {e}")
         return None
-
 
 # =====================================================================
 # 3. JioMart Scraper
