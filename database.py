@@ -13,7 +13,11 @@ from typing import List, Dict, Any, Optional
 
 # Configurable DB path for cloud deployment persistence (e.g. Railway Volume mounted at /data)
 DATA_DIR = os.getenv("DATA_DIR")
-if DATA_DIR and os.path.isdir(DATA_DIR):
+if DATA_DIR:
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+    except Exception:
+        pass
     DB_FILE = os.path.join(DATA_DIR, "alerts.db")
 elif os.getenv("DATABASE_PATH"):
     DB_FILE = os.getenv("DATABASE_PATH")
@@ -166,9 +170,32 @@ def add_tracked_product(
     current_price: float,
     currency: str = "₹",
 ) -> int:
-    """Add a new product price drop alert to the database."""
+    """Add a new product price drop alert or update target price if already actively tracked."""
     with get_db_connection() as conn:
         cursor = conn.cursor()
+        # Prevent duplicate active trackers for the same user and product
+        cursor.execute(
+            """
+            SELECT id FROM tracked_products
+            WHERE user_id = ? AND platform = ? AND asin = ? AND is_active = 1
+            LIMIT 1
+            """,
+            (user_id, platform, item_id),
+        )
+        existing = cursor.fetchone()
+        if existing:
+            product_id = existing["id"]
+            cursor.execute(
+                """
+                UPDATE tracked_products
+                SET target_price = ?, current_price = ?, url = ?, image_url = ?, currency = ?
+                WHERE id = ?
+                """,
+                (target_price, current_price, url, image_url, currency, product_id),
+            )
+            conn.commit()
+            return product_id
+
         cursor.execute(
             """
             INSERT INTO tracked_products (

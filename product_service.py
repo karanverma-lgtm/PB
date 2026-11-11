@@ -231,7 +231,16 @@ def parse_amazon_soup(soup: BeautifulSoup, asin: str, canonical_url: str) -> Opt
 
     # Price Extraction
     price = None
-    currency = "₹" if "amazon.in" in canonical_url else "$"
+    if "amazon.in" in canonical_url:
+        currency = "₹"
+    elif "amazon.co.uk" in canonical_url:
+        currency = "£"
+    elif any(d in canonical_url for d in ["amazon.de", "amazon.fr", "amazon.it", "amazon.es"]):
+        currency = "€"
+    elif "amazon.co.jp" in canonical_url:
+        currency = "¥"
+    else:
+        currency = "$"
 
     # Whole + Fraction
     price_whole = soup.find("span", class_="a-price-whole")
@@ -331,7 +340,8 @@ def fetch_amazon_product(url_or_asin: str) -> Optional[Dict[str, Any]]:
             logger.error(f"Could not extract ASIN from {clean_target}")
             return None
 
-        domain = "amazon.com" if "amazon.com" in clean_target.lower() else "amazon.in"
+        m_dom = re.search(r"(amazon\.[a-z.]+)", clean_target.lower())
+        domain = m_dom.group(1) if m_dom else ("amazon.com" if "amazon.com" in clean_target.lower() else "amazon.in")
         canonical_url = f"https://www.{domain}/dp/{asin}"
         mobile_url = f"https://www.{domain}/gp/aw/d/{asin}"
 
@@ -548,12 +558,12 @@ def fetch_jiomart_product(url: str) -> Optional[Dict[str, Any]]:
                 except Exception:
                     pass
 
-        # 3. Extract Price: look for price-rrp (selling price) or price-mrp
-        rrp_match = re.search(r'"price-rrp"\s*:\s*"(\d+(?:\.\d+)?)"', res.text)
-        if rrp_match:
-            price = float(rrp_match.group(1))
+        # 3. Extract Price: look for selling_price, final_price, price-rrp, or price-mrp
+        sp_match = re.search(r'"(?:selling_price|final_price|price-rrp)"\s*:\s*"*(\d+(?:\.\d+)?)"*', res.text)
+        if sp_match:
+            price = float(sp_match.group(1))
         else:
-            mrp_match = re.search(r'"price-mrp"\s*:\s*"(\d+(?:\.\d+)?)"', res.text)
+            mrp_match = re.search(r'"price-mrp"\s*:\s*"*(\d+(?:\.\d+)?)"*', res.text)
             if mrp_match:
                 price = float(mrp_match.group(1))
 
@@ -607,9 +617,12 @@ def fetch_reliancedigital_product(url: str) -> Optional[Dict[str, Any]]:
         idx = res.text.find("window.__INITIAL_STATE__")
         if idx != -1:
             brace_start = res.text.find("{", idx)
+            end_limit = res.text.find("</script>", idx)
+            if end_limit == -1:
+                end_limit = len(res.text)
             depth = 0
             state_str = None
-            for j in range(brace_start, len(res.text)):
+            for j in range(brace_start, end_limit):
                 if res.text[j] == "{":
                     depth += 1
                 elif res.text[j] == "}":
@@ -680,9 +693,12 @@ def fetch_croma_product(url: str) -> Optional[Dict[str, Any]]:
         idx = res.text.find("window.__INITIAL_DATA__=")
         if idx != -1:
             brace_start = res.text.find("{", idx)
+            end_limit = res.text.find("</script>", idx)
+            if end_limit == -1:
+                end_limit = len(res.text)
             depth = 0
             json_str = None
-            for i in range(brace_start, len(res.text)):
+            for i in range(brace_start, end_limit):
                 if res.text[i] == "{":
                     depth += 1
                 elif res.text[i] == "}":
@@ -763,9 +779,15 @@ def fetch_samsung_product(url: str) -> Optional[Dict[str, Any]]:
                             img_url = img[0] if isinstance(img, list) else img
                         if not price and "offers" in item:
                             offers = item.get("offers", {})
-                            p_val = offers.get("price")
-                            if p_val:
-                                price = float(str(p_val).replace(",", ""))
+                            if isinstance(offers, list) and offers:
+                                offers = offers[0]
+                            if isinstance(offers, dict):
+                                p_val = offers.get("price")
+                                if p_val:
+                                    try:
+                                        price = float(str(p_val).replace(",", ""))
+                                    except (ValueError, TypeError):
+                                        pass
                     elif t == "ProductGroup":
                         if not title:
                             title = item.get("name")

@@ -152,11 +152,28 @@ async def track_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
         return
 
-    url = context.args[0].strip()
-    try:
-        target_price = clean_price_input(context.args[1])
-    except ValueError as e:
-        await update.message.reply_text(f"❌ Invalid target price: {html.escape(str(e))}")
+    # Flexible parsing: identify URL and numeric price regardless of argument order
+    url = None
+    target_price = None
+
+    for arg in context.args:
+        arg_clean = arg.strip()
+        if arg_clean.startswith("http://") or arg_clean.startswith("https://") or "amazon." in arg_clean or "amzn." in arg_clean or "flipkart." in arg_clean:
+            url = arg_clean
+        else:
+            try:
+                val = clean_price_input(arg_clean)
+                target_price = val
+            except Exception:
+                pass
+
+    if not url or target_price is None:
+        await update.message.reply_text(
+            "⚠️ <b>Could not recognize URL or target price!</b>\n\n"
+            "Please provide both the product link and target price number.\n"
+            "Example: <code>/track https://www.amazon.in/... 75000</code>",
+            parse_mode=ParseMode.HTML,
+        )
         return
 
     loading_msg = await update.message.reply_text("🔍 Fetching product details... Please wait a moment.")
@@ -278,30 +295,46 @@ async def list_products_command(update: Update, context: ContextTypes.DEFAULT_TY
         "Samsung": "🌌",
     }
 
+    chunks = []
+    current_text = f"📋 <b>Your Tracked Products ({len(products)}):</b>\n━━━━━━━━━━━━━━━━━━━\n\n"
+    current_keyboard = []
+
     for p in products:
         savings = p["current_price"] - p["target_price"]
         curr_str = f"{p['currency']}{p['current_price']:,.2f}"
         target_str = f"{p['currency']}{p['target_price']:,.2f}"
         platform_icon = icons.get(p.get("platform"), "🏷️")
         p_title = html.escape(p["title"][:38])
+        safe_url = html.escape(p["url"])
 
-        text += (
-            f"• <b>ID <code>#{p['id']}</code>:</b> {platform_icon} <a href=\"{p['url']}\">{p_title}...</a>\n"
+        entry = (
+            f"• <b>ID <code>#{p['id']}</code>:</b> {platform_icon} <a href=\"{safe_url}\">{p_title}...</a>\n"
             f"  💰 Current: <code>{curr_str}</code> ➔ Target: <code>{target_str}</code> "
             f"<i>(Needs {p['currency']}{savings:,.2f} drop)</i>\n\n"
         )
-        keyboard.append([
+        buttons = [
             InlineKeyboardButton(f"🛒 #{p['id']} View", url=p["url"]),
             InlineKeyboardButton(f"❌ Stop #{p['id']}", callback_data=f"del_{p['id']}"),
-        ])
+        ]
 
-    keyboard.append([InlineKeyboardButton("🗑️ Clear All Tracked Items", callback_data="clear_all")])
-    reply_markup = InlineKeyboardMarkup(keyboard)
+        if len(current_text) + len(entry) > 3500 or len(current_keyboard) >= 20:
+            chunks.append((current_text, current_keyboard))
+            current_text = "📋 <b>Continued Tracked Products:</b>\n━━━━━━━━━━━━━━━━━━━\n\n" + entry
+            current_keyboard = [buttons]
+        else:
+            current_text += entry
+            current_keyboard.append(buttons)
 
-    if update.message:
-        await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=reply_markup, disable_web_page_preview=True)
-    elif update.callback_query:
-        await update.callback_query.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=reply_markup, disable_web_page_preview=True)
+    if current_text:
+        current_keyboard.append([InlineKeyboardButton("🗑️ Clear All Tracked Items", callback_data="clear_all")])
+        chunks.append((current_text, current_keyboard))
+
+    for idx, (chunk_text, chunk_kb) in enumerate(chunks):
+        reply_markup = InlineKeyboardMarkup(chunk_kb)
+        if update.message:
+            await update.message.reply_text(chunk_text, parse_mode=ParseMode.HTML, reply_markup=reply_markup, disable_web_page_preview=True)
+        elif update.callback_query:
+            await update.callback_query.message.reply_text(chunk_text, parse_mode=ParseMode.HTML, reply_markup=reply_markup, disable_web_page_preview=True)
 
 
 async def deltrack_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -524,7 +557,7 @@ async def check_prices_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         try:
             # Run scraper in thread pool to prevent blocking asyncio event loop
             prod_data = await asyncio.to_thread(product_service.fetch_product, fetch_url)
-            if not prod_data or not prod_data.get("price"):
+            if not prod_data or not prod_data.get("price") or prod_data["price"] <= 0:
                 continue
 
             new_price = prod_data["price"]
