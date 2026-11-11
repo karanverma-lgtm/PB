@@ -20,6 +20,7 @@ def run_tests():
     detection_cases = [
         ("https://www.amazon.in/dp/B09G9BL5CP", "Amazon"),
         ("https://amzn.to/3xyz", "Amazon"),
+        ("https://amzn.in/d/0gl6MyWv", "Amazon"),
         ("B09G9BL5CP", "Amazon"),
         ("https://www.flipkart.com/apple-iphone-15/p/itm6ac6485515ae4", "Flipkart"),
         ("https://dl.flipkart.com/s/12345", "Flipkart"),

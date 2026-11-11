@@ -16,6 +16,7 @@ import json
 import re
 import time
 import logging
+import urllib.request
 from typing import Optional, Dict, Any, List
 from curl_cffi import requests
 from bs4 import BeautifulSoup
@@ -37,6 +38,16 @@ HEADERS = {
     "Upgrade-Insecure-Requests": "1",
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
     "Cookie": "pincode=400001; delivery_pincode=400001; pin=400001; _pincode=400001; city=Mumbai",
+}
+
+# Dedicated clean browser headers for Amazon (no Indian pincode cookies that trigger bot WAF)
+AMAZON_HEADERS = {
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-IN,en-US;q=0.9,en;q=0.8,hi;q=0.7",
+    "Accept-Encoding": "gzip, deflate, br",
+    "DNT": "1",
+    "Upgrade-Insecure-Requests": "1",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
 }
 
 
@@ -70,45 +81,102 @@ def detect_platform(url_or_text: str) -> str:
 # 1. Amazon Scraper
 # =====================================================================
 
+def resolve_amazon_short_url(target: str) -> str:
+    """Resolve Amazon short URLs (amzn.in, amzn.to, /d/ links) without triggering full page blocks."""
+    clean = clean_url_from_text(target)
+    if not any(k in clean.lower() for k in ["amzn.to", "amzn.in", "bit.ly", "tinyurl.com"]):
+        return clean
+
+    # Method 1: Fast HTTP redirect check with curl_cffi (allow_redirects=False)
+    try:
+        r = requests.get(
+            clean,
+            impersonate="chrome120",
+            headers={"User-Agent": AMAZON_HEADERS["User-Agent"]},
+            allow_redirects=False,
+            timeout=8,
+        )
+        loc = r.headers.get("Location") or r.headers.get("location")
+        if loc:
+            return loc
+    except Exception as e:
+        logger.debug(f"curl_cffi short url check failed: {e}")
+
+    # Method 2: Standard urllib redirect handler (avoids page download / anti-bot gates)
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None
+
+    try:
+        opener = urllib.request.build_opener(_NoRedirect)
+        req = urllib.request.Request(
+            clean,
+            headers={"User-Agent": AMAZON_HEADERS["User-Agent"]},
+        )
+        resp = opener.open(req, timeout=8)
+        loc = resp.headers.get("Location")
+        if loc:
+            return loc
+    except urllib.error.HTTPError as e:
+        loc = e.headers.get("Location")
+        if loc:
+            return loc
+    except Exception as e:
+        logger.debug(f"urllib short url check failed: {e}")
+
+    # Method 3: Fallback with allow_redirects=True
+    try:
+        r = requests.get(
+            clean,
+            impersonate="chrome120",
+            headers=AMAZON_HEADERS,
+            allow_redirects=True,
+            timeout=12,
+        )
+        if r.url and r.url != clean:
+            return r.url
+    except Exception as e:
+        logger.debug(f"curl_cffi full redirect failed: {e}")
+
+    return clean
+
+
 def extract_amazon_asin(text: str) -> Optional[str]:
     """Extract 10-character Amazon Standard Identification Number (ASIN)."""
-    text = clean_url_from_text(text)
-    if re.match(r"^[A-Z0-9]{10}$", text, re.IGNORECASE):
-        return text.upper()
+    clean = clean_url_from_text(text)
+    if re.match(r"^[A-Z0-9]{10}$", clean, re.IGNORECASE):
+        return clean.upper()
+
+    # Try resolving short links if present
+    if any(k in clean.lower() for k in ["amzn.to", "amzn.in"]):
+        clean = resolve_amazon_short_url(clean)
 
     patterns = [
         r"/dp/([A-Z0-9]{10})",
         r"/gp/product/([A-Z0-9]{10})",
-        r"/d/([A-Z0-9]{10})",
         r"/product/([A-Z0-9]{10})",
         r"/gp/aw/d/([A-Z0-9]{10})",
-        r"/([A-Z0-9]{10})(?:[/?]|$)",
+        r"/d/([A-Z0-9]{10})",
+        r"[?&]asin=([A-Z0-9]{10})",
+        r"[?&]pd_rd_i=([A-Z0-9]{10})",
+        r"/([A-Z0-9]{10})(?:[/?&]|$)",
     ]
     for p in patterns:
-        m = re.search(p, text, re.IGNORECASE)
+        m = re.search(p, clean, re.IGNORECASE)
         if m:
-            return m.group(1).upper()
+            candidate = m.group(1).upper()
+            if candidate not in ["PRODUCT", "BUYING"]:
+                return candidate
     return None
 
 
 def fetch_amazon_product(url_or_asin: str) -> Optional[Dict[str, Any]]:
-    """Fetch live product details from Amazon with buy-box verification."""
+    """Fetch live product details from Amazon with buy-box verification and mobile fallback."""
     clean_target = clean_url_from_text(url_or_asin)
     try:
         # Resolve short link (amzn.in or amzn.to)
-        if "amzn.to" in clean_target or "amzn.in" in clean_target:
-            try:
-                head_res = requests.get(
-                    clean_target,
-                    impersonate="chrome120",
-                    headers=HEADERS,
-                    allow_redirects=True,
-                    timeout=15,
-                )
-                if head_res.url and head_res.url != clean_target:
-                    clean_target = head_res.url
-            except Exception as e:
-                logger.debug(f"Amazon short link redirect error: {e}")
+        if any(k in clean_target.lower() for k in ["amzn.to", "amzn.in"]):
+            clean_target = resolve_amazon_short_url(clean_target)
 
         asin = extract_amazon_asin(clean_target)
         if not asin:
@@ -117,50 +185,68 @@ def fetch_amazon_product(url_or_asin: str) -> Optional[Dict[str, Any]]:
 
         domain = "amazon.com" if "amazon.com" in clean_target.lower() else "amazon.in"
         canonical_url = f"https://www.{domain}/dp/{asin}"
+        mobile_url = f"https://www.{domain}/gp/aw/d/{asin}"
 
         res = None
-        for attempt in range(2):
+        # Try desktop and mobile endpoints with rotating browser impersonations
+        fetch_attempts = [
+            (canonical_url, "chrome124", AMAZON_HEADERS),
+            (mobile_url, "chrome120", AMAZON_HEADERS),
+            (canonical_url, "safari17_0", None),
+            (mobile_url, "safari15_5", None),
+        ]
+
+        for target_url, imp, hdrs in fetch_attempts:
             try:
-                res = requests.get(canonical_url, impersonate="chrome120", headers=HEADERS, timeout=20)
-                if res.status_code == 200:
+                r = requests.get(target_url, impersonate=imp, headers=hdrs, timeout=15)
+                if r.status_code == 200:
+                    # Check if response is blocked by CAPTCHA
+                    if "api-services-support@amazon.com" in r.text or "validateCaptcha" in r.text:
+                        logger.warning(f"Amazon CAPTCHA on {target_url} ({imp}), trying fallback...")
+                        continue
+                    res = r
                     break
-                elif res.status_code in [429, 503]:
-                    time.sleep(1.5)
-            except Exception:
-                time.sleep(1.0)
+                elif r.status_code in [429, 503]:
+                    time.sleep(1.0)
+            except Exception as req_err:
+                logger.debug(f"Attempt failed for {target_url} ({imp}): {req_err}")
+                time.sleep(0.5)
 
         if not res or res.status_code != 200:
-            logger.error(f"Amazon HTTP error for {canonical_url}")
-            return None
-
-        if "api-services-support@amazon.com" in res.text or "validateCaptcha" in res.text:
-            logger.warning(f"Amazon CAPTCHA detected for {canonical_url}")
+            logger.error(f"Amazon HTTP error or bot gate for ASIN {asin}")
             return None
 
         soup = BeautifulSoup(res.text, "html.parser")
 
-        # Title Extraction
+        # 1. Title Extraction
         title = None
-        title_elem = soup.find("span", id="productTitle")
-        if title_elem and title_elem.get_text(strip=True):
-            title = title_elem.get_text(strip=True)
-        else:
+        for t_sel in ["span#productTitle", "h1#title", "span#title", "h1.a-size-large"]:
+            elem = soup.select_one(t_sel)
+            if elem and elem.get_text(strip=True):
+                title = elem.get_text(strip=True)
+                break
+
+        if not title:
             og_title = soup.find("meta", property="og:title") or soup.find("meta", attrs={"name": "title"})
             if og_title and og_title.get("content"):
                 title = og_title.get("content").replace("Amazon.in:", "").replace("Amazon.com:", "").strip()
 
+        if not title and soup.title:
+            raw_t = soup.title.get_text(strip=True)
+            if raw_t and "Robot Check" not in raw_t and "Page Not Found" not in raw_t:
+                title = raw_t.replace("Amazon.in:", "").replace("Amazon.com:", "").strip()
+
         if not title:
-            logger.error("Could not find product title on Amazon")
+            logger.error(f"Could not find product title on Amazon for {asin}")
             return None
 
-        # Price Extraction
+        # 2. Price Extraction
         price = None
         currency = "₹" if "amazon.in" in canonical_url else "$"
 
-        # 1. Whole + Fraction
+        # Whole + Fraction
         price_whole = soup.find("span", class_="a-price-whole")
         price_fraction = soup.find("span", class_="a-price-fraction")
-
         if price_whole:
             p_str = price_whole.get_text(strip=True).replace(",", "").replace(".", "").strip()
             if p_str.isdigit():
@@ -168,16 +254,20 @@ def fetch_amazon_product(url_or_asin: str) -> Optional[Dict[str, Any]]:
                 frac = frac if frac.isdigit() else "00"
                 price = float(f"{p_str}.{frac}")
 
-        # 2. Selectors fallback
+        # Selectors fallback
         if price is None:
             for selector in [
                 "span.priceToPay span.a-offscreen",
                 "span.apexPriceToPay span.a-offscreen",
                 "div#corePrice_desktop span.a-price-whole",
+                "div#corePrice_mobile_feature_div span.a-price-whole",
+                "div#corePriceDisplay_desktop_feature_div span.a-price-whole",
                 "span.a-price.a-text-price span.a-offscreen",
                 "span#priceblock_ourprice",
                 "span#priceblock_dealprice",
+                "span#priceblock_saleprice",
                 "span.a-price span.a-offscreen",
+                "span.a-color-price",
             ]:
                 elem = soup.select_one(selector)
                 if elem:
@@ -187,24 +277,44 @@ def fetch_amazon_product(url_or_asin: str) -> Optional[Dict[str, Any]]:
                         price = float(match.group(0).replace(",", ""))
                         break
 
-        # 3. Regex search for currency in buybox if still None
+        # Hidden inputs / data attributes fallback
         if price is None:
-            price_div = soup.find("div", id=re.compile(r"corePrice|apex_desktop|desktop_unifiedPrice|buybox"))
+            for input_name in ["displayedPrice", "items[0][price]", "twister-plus-price-data"]:
+                inp = soup.find("input", attrs={"name": input_name})
+                if inp and inp.get("value"):
+                    m = re.search(r"[\d,]+(?:\.\d+)?", inp.get("value"))
+                    if m:
+                        val = float(m.group(0).replace(",", ""))
+                        if val > 0:
+                            price = val
+                            break
+
+        # Buybox regex search fallback
+        if price is None:
+            price_div = soup.find("div", id=re.compile(r"corePrice|apex_desktop|desktop_unifiedPrice|buybox|mobile_unifiedPrice"))
             if price_div:
                 matches = re.findall(r"[₹\$]\s*([\d,]+(?:\.\d+)?)", price_div.get_text())
                 if matches:
-                    price = float(matches[0].replace(",", ""))
+                    val = float(matches[0].replace(",", ""))
+                    if val > 0:
+                        price = val
 
         if price is None:
             logger.warning(f"Product '{title[:40]}' found but price is unavailable / out of stock.")
             return None
 
+        # Currency symbol
         sym_elem = soup.find("span", class_="a-price-symbol")
-        if sym_elem:
+        if sym_elem and sym_elem.get_text(strip=True):
             currency = sym_elem.get_text(strip=True)
 
-        img_elem = soup.find("img", id="landingImage") or soup.find("img", id="imgBlkFront")
+        # Image extraction
+        img_elem = soup.find("img", id="landingImage") or soup.find("img", id="imgBlkFront") or soup.find("img", id="main-image")
         img_url = img_elem.get("src") if img_elem else None
+        if not img_url:
+            og_img = soup.find("meta", property="og:image")
+            if og_img and og_img.get("content"):
+                img_url = og_img.get("content")
 
         return {
             "platform": "Amazon",
