@@ -46,6 +46,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger("PriceTrackerBot")
 
+# Suppress repetitive HTTP polling requests from filling cloud logs
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
 
 # ---------------------------------------------------------
 # Helper Functions

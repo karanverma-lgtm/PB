@@ -108,6 +108,12 @@ def init_db() -> None:
             except Exception:
                 pass
 
+        if "lowest_price" not in columns:
+            try:
+                cursor.execute("ALTER TABLE tracked_products ADD COLUMN lowest_price REAL DEFAULT NULL")
+            except Exception:
+                pass
+
         cursor.execute(
             "CREATE INDEX IF NOT EXISTS idx_products_active ON tracked_products (is_active)"
         )
@@ -255,9 +261,9 @@ def add_tracked_product(
             """
             INSERT INTO tracked_products (
                 user_id, chat_id, platform, asin, title, url, image_url,
-                target_price, initial_price, current_price, currency, pincode, is_active
+                target_price, initial_price, current_price, lowest_price, currency, pincode, is_active
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
             """,
             (
                 user_id,
@@ -268,6 +274,7 @@ def add_tracked_product(
                 url,
                 image_url,
                 target_price,
+                current_price,
                 current_price,
                 current_price,
                 currency,
@@ -285,7 +292,7 @@ def get_user_products(user_id: int) -> List[Dict[str, Any]]:
         cursor.execute(
             """
             SELECT id, user_id, chat_id, platform, asin AS item_id, title, url, image_url,
-                   target_price, initial_price, current_price, currency, pincode, created_at
+                   target_price, initial_price, current_price, lowest_price, currency, pincode, created_at
             FROM tracked_products
             WHERE user_id = ? AND is_active = 1
             ORDER BY created_at DESC
@@ -302,7 +309,7 @@ def get_all_active_products() -> List[Dict[str, Any]]:
         cursor.execute(
             """
             SELECT id, user_id, chat_id, platform, asin AS item_id, title, url, image_url,
-                   target_price, initial_price, current_price, currency, pincode
+                   target_price, initial_price, current_price, lowest_price, currency, pincode
             FROM tracked_products
             WHERE is_active = 1
             """
@@ -311,16 +318,18 @@ def get_all_active_products() -> List[Dict[str, Any]]:
 
 
 def update_product_price(product_id: int, new_price: float) -> None:
-    """Update the latest known price for a tracked product."""
+    """Update the latest known price for a tracked product and record all-time lowest price."""
     with get_db_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
             """
             UPDATE tracked_products
-            SET current_price = ?, last_checked_at = CURRENT_TIMESTAMP
+            SET current_price = ?,
+                lowest_price = MIN(COALESCE(lowest_price, current_price, ?), ?),
+                last_checked_at = CURRENT_TIMESTAMP
             WHERE id = ?
             """,
-            (new_price, product_id),
+            (new_price, new_price, new_price, product_id),
         )
         conn.commit()
 
