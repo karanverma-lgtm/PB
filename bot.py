@@ -22,6 +22,7 @@ from telegram import (
     InlineKeyboardMarkup,
 )
 from telegram.constants import ParseMode
+from telegram.error import RetryAfter, TelegramError
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -512,15 +513,17 @@ async def check_prices_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 
     logger.info(f"Checking prices for {len(products)} active tracked product(s)...")
 
-    # Group by URL to eliminate redundant network calls
-    url_map: Dict[str, list] = {}
+    # Group by (platform, item_id) to eliminate redundant network calls across different URL formats
+    prod_map: Dict[tuple, list] = {}
     for p in products:
-        url_map.setdefault(p["url"], []).append(p)
+        key = (p.get("platform", "Unknown"), p.get("item_id") or p["url"])
+        prod_map.setdefault(key, []).append(p)
 
-    for url, items in url_map.items():
+    for (platform_key, item_key), items in prod_map.items():
+        fetch_url = items[0]["url"]
         try:
             # Run scraper in thread pool to prevent blocking asyncio event loop
-            prod_data = await asyncio.to_thread(product_service.fetch_product, url)
+            prod_data = await asyncio.to_thread(product_service.fetch_product, fetch_url)
             if not prod_data or not prod_data.get("price"):
                 continue
 
@@ -548,6 +551,14 @@ async def check_prices_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                     [InlineKeyboardButton("🛑 Stop Tracking", callback_data=f"del_{product_id}")]
                 ]
                 reply_markup = InlineKeyboardMarkup(keyboard)
+
+                # Accessory / Refurbished Dropdown Sanity Guard
+                initial = item.get("initial_price", new_price)
+                if initial > 1000 and new_price < initial * 0.15:
+                    accessory_words = ["case", "cover", "cable", "adapter", "protector", "strap", "guard", "skin"]
+                    if any(w in title.lower() for w in accessory_words) and not any(w in item.get("title", "").lower() for w in accessory_words):
+                        logger.warning(f"Accessory mismatch detected for item #{product_id} ({title}). Skipping drop alert.")
+                        continue
 
                 if new_price <= target_price:
                     database.mark_product_triggered(product_id, new_price)
@@ -579,6 +590,7 @@ async def check_prices_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                         f"🕒 <i>Next automated check in 4 hours.</i>"
                     )
 
+                # Dispatch with Telegram Flood Control handling & graceful text fallback
                 try:
                     if image_url:
                         await context.bot.send_photo(
@@ -595,8 +607,15 @@ async def check_prices_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                             parse_mode=ParseMode.HTML,
                             reply_markup=reply_markup,
                         )
+                except RetryAfter as flood_err:
+                    logger.warning(f"Telegram FloodControl: Waiting {flood_err.retry_after}s...")
+                    await asyncio.sleep(flood_err.retry_after + 1.0)
+                    try:
+                        await context.bot.send_message(chat_id=chat_id, text=update_text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+                    except Exception:
+                        pass
                 except Exception as e:
-                    logger.error(f"Failed to dispatch photo update, trying text: {e}")
+                    logger.debug(f"Photo dispatch failed ({e}), falling back to text: {e}")
                     try:
                         await context.bot.send_message(
                             chat_id=chat_id,
@@ -607,10 +626,13 @@ async def check_prices_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                     except Exception as text_e:
                         logger.error(f"Failed to dispatch text update to chat {chat_id}: {text_e}")
 
+                # Micro-pause between messages to the same chat to respect 1 msg/sec limit
+                await asyncio.sleep(0.5)
+
             # Randomized human-like jitter delay between product URLs to prevent platform rate limits
             await asyncio.sleep(random.uniform(1.5, 3.5))
         except Exception as e:
-            logger.error(f"Error checking price for {url}: {e}")
+            logger.error(f"Error checking price for {fetch_url}: {e}")
             await asyncio.sleep(random.uniform(1.0, 2.0))
 
 

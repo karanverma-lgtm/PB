@@ -16,6 +16,7 @@ import json
 import re
 import time
 import logging
+import threading
 import urllib.request
 from typing import Optional, Dict, Any, List
 from curl_cffi import requests
@@ -30,11 +31,20 @@ try:
 except Exception:
     CAMOUFOX_AVAILABLE = False
 
+# Global lock to ensure only 1 Camoufox headless browser instance runs at a time (prevents OOM on 512MB RAM)
+_CAMOUFOX_LOCK = threading.Lock()
+
 
 def fetch_page_with_camoufox(url: str, timeout_ms: int = 25000) -> Optional[str]:
-    """Render full dynamic JavaScript page using Camoufox stealth browser to bypass WAF / CAPTCHAs."""
+    """Render full dynamic JavaScript page using Camoufox stealth browser with single-instance memory protection."""
     if not CAMOUFOX_AVAILABLE:
         return None
+
+    # Acquire lock without blocking indefinitely to prevent process hangs
+    if not _CAMOUFOX_LOCK.acquire(timeout=30.0):
+        logger.warning(f"Camoufox lock busy, skipping browser fetch for {url[:50]}")
+        return None
+
     try:
         logger.info(f"🦊 Invoking Camoufox stealth browser for {url[:60]}...")
         with Camoufox(headless=True, humanize=True) as browser:
@@ -46,6 +56,8 @@ def fetch_page_with_camoufox(url: str, timeout_ms: int = 25000) -> Optional[str]
                 return rendered
     except Exception as e:
         logger.debug(f"Camoufox stealth fetch failed for {url[:60]}: {e}")
+    finally:
+        _CAMOUFOX_LOCK.release()
     return None
 
 # Default realistic browser headers with metro pincode cookies for Indian e-commerce
