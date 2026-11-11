@@ -22,7 +22,7 @@ from telegram import (
     InlineKeyboardMarkup,
 )
 from telegram.constants import ParseMode
-from telegram.error import RetryAfter, TelegramError
+from telegram.error import RetryAfter, TelegramError, Forbidden
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -645,8 +645,16 @@ async def check_prices_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                     await asyncio.sleep(flood_err.retry_after + 1.0)
                     try:
                         await context.bot.send_message(chat_id=chat_id, text=update_text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+                    except Forbidden:
+                        logger.warning(f"Bot was blocked by chat {chat_id}. Deactivating alerts for user {item['user_id']}.")
+                        database.clear_user_products(item["user_id"])
+                        break
                     except Exception:
                         pass
+                except Forbidden:
+                    logger.warning(f"Bot was blocked by chat {chat_id}. Deactivating alerts for user {item['user_id']}.")
+                    database.clear_user_products(item["user_id"])
+                    break
                 except Exception as e:
                     logger.debug(f"Photo dispatch failed ({e}), falling back to text: {e}")
                     try:
@@ -656,6 +664,10 @@ async def check_prices_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                             parse_mode=ParseMode.HTML,
                             reply_markup=reply_markup,
                         )
+                    except Forbidden:
+                        logger.warning(f"Bot was blocked by chat {chat_id}. Deactivating alerts for user {item['user_id']}.")
+                        database.clear_user_products(item["user_id"])
+                        break
                     except Exception as text_e:
                         logger.error(f"Failed to dispatch text update to chat {chat_id}: {text_e}")
 
