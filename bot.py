@@ -10,6 +10,7 @@ and persistent database caching across restarts.
 import os
 import re
 import html
+import random
 import asyncio
 import logging
 from typing import Dict, Any, Optional
@@ -588,11 +589,11 @@ async def check_prices_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                         except Exception as text_e:
                             logger.error(f"Failed to dispatch text alert to chat {chat_id}: {text_e}")
 
-            # Jitter delay between different product URLs to prevent platform rate limits
-            await asyncio.sleep(1.2)
+            # Randomized human-like jitter delay between product URLs to prevent platform rate limits
+            await asyncio.sleep(random.uniform(1.5, 3.5))
         except Exception as e:
             logger.error(f"Error checking price for {url}: {e}")
-            await asyncio.sleep(1.0)
+            await asyncio.sleep(random.uniform(1.0, 2.0))
 
 
 # ---------------------------------------------------------
@@ -627,10 +628,11 @@ def main() -> None:
     # Direct message handler (Auto-detects when a product link is pasted)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url_message))
 
-    # Background Job: Polls prices every 5 minutes (300 seconds)
+    # Background Job: Configurable polling interval (default: 900s / 15 minutes)
+    poll_interval = int(os.getenv("CHECK_INTERVAL", 900))
     if app.job_queue:
-        app.job_queue.run_repeating(check_prices_job, interval=300, first=15)
-        logger.info("Price drop background job registered (300s interval).")
+        app.job_queue.run_repeating(check_prices_job, interval=poll_interval, first=15)
+        logger.info(f"Price drop background job registered ({poll_interval}s interval).")
 
     print("\n" + "=" * 65)
     print("🛍️ Multi-Platform Price Drop Bot (@Stockmightybot) Live!")
