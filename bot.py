@@ -75,6 +75,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     """Send welcome message and guide the user on how to track products."""
     user = update.effective_user
     name = html.escape(user.first_name) if user and user.first_name else "Shopper"
+    user_pin = database.get_user_pincode(user.id) if user else "110001"
 
     text = (
         f"👋 <b>Welcome to Price Drop Alert Bot, {name}!</b>\n\n"
@@ -87,11 +88,13 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "• 🔴 <b>Reliance Digital</b> (<code>reliancedigital.in</code>)\n"
         "• ⚪ <b>Croma</b> (<code>croma.com</code>)\n"
         "• 🌌 <b>Samsung India</b> (<code>samsung.com/in</code>)\n\n"
+        f"📍 <b>Active Delivery PIN:</b> <code>{user_pin}</code> (Change with <code>/pincode &lt;PIN&gt;</code>)\n\n"
         "⚡ <b>How to use:</b>\n"
         "1. Simply <b>paste or share any product link</b> into this chat.\n"
         "2. Choose a quick discount button (5%, 10%, 15% drop) or set your own target!\n\n"
         "📋 <b>Commands:</b>\n"
         "• <code>/track &lt;URL&gt; &lt;DESIRED_PRICE&gt;</code> — Track product with target price\n"
+        "• <code>/pincode &lt;6-DIGIT-PIN&gt;</code> — Set delivery PIN for local price & stock\n"
         "• <code>/products</code> — View and manage all your tracked items\n"
         "• <code>/deltrack &lt;ID&gt;</code> — Stop tracking a product\n"
         "• <code>/cleartrack</code> — Clear all tracked products\n"
@@ -101,6 +104,9 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     keyboard = [
         [
             InlineKeyboardButton("📋 My Tracked Products", callback_data="list_products"),
+            InlineKeyboardButton("📍 Set PIN Code", callback_data="pincode_menu"),
+        ],
+        [
             InlineKeyboardButton("❓ Help & Examples", callback_data="help_menu"),
         ]
     ]
@@ -119,6 +125,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "The bot will automatically fetch the item and let you pick your target price.\n\n"
         "<b>Method 2 (Command):</b>\n"
         "<code>/track &lt;PRODUCT_LINK&gt; &lt;DESIRED_PRICE&gt;</code>\n\n"
+        "📍 <b>Delivery PIN Code (Localized Prices & Stock):</b>\n"
+        "• <code>/pincode &lt;6_DIGIT_PIN&gt;</code> — Set your delivery PIN (e.g. <code>/pincode 110001</code>)\n"
+        "• <code>/pincode</code> — View your active PIN & pick metro quick presets\n\n"
         "⚡ <b>Examples across platforms:</b>\n"
         "• <code>/track https://www.amazon.in/dp/B09G9BL5CP 75000</code>\n"
         "• <code>/track https://www.flipkart.com/... 55000</code>\n"
@@ -135,6 +144,68 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await update.message.reply_text(text, parse_mode=ParseMode.HTML)
     elif update.callback_query:
         await update.callback_query.message.reply_text(text, parse_mode=ParseMode.HTML)
+
+
+async def pincode_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """View or update user delivery pincode for accurate localized prices and stock."""
+    user = update.effective_user
+    if not user:
+        return
+
+    # If argument provided: validate and update user's pincode
+    if context.args:
+        candidate_pin = context.args[0].strip()
+        if not re.match(r"^\d{6}$", candidate_pin):
+            msg = (
+                "❌ <b>Invalid PIN code format!</b>\n\n"
+                "Please provide a valid 6-digit Indian PIN code (e.g. <code>/pincode 110001</code>)."
+            )
+            if update.message:
+                await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+            return
+
+        database.set_user_pincode(user.id, candidate_pin)
+        confirm_text = (
+            f"📍 <b>Delivery PIN code updated to <code>{candidate_pin}</code>!</b>\n\n"
+            f"All future price checks, stock verification, and alerts will check prices for PIN code <b>{candidate_pin}</b>."
+        )
+        if update.message:
+            await update.message.reply_text(confirm_text, parse_mode=ParseMode.HTML)
+        elif update.callback_query:
+            await update.callback_query.message.reply_text(confirm_text, parse_mode=ParseMode.HTML)
+        return
+
+    # If no argument: display current pincode and quick selection menu
+    current_pin = database.get_user_pincode(user.id)
+    text = (
+        f"📍 <b>Your Current Delivery PIN Code:</b> <code>{current_pin}</code>\n\n"
+        "Stores like Reliance Digital, Croma, JioMart, and Flipkart display live stock and pricing based on your delivery PIN code.\n\n"
+        "⚡ <b>How to update:</b>\n"
+        "• Type: <code>/pincode &lt;YOUR_6_DIGIT_PIN&gt;</code>\n"
+        "  <i>Example: <code>/pincode 110001</code></i>\n\n"
+        "Or tap one of the quick metro presets below:"
+    )
+
+    keyboard = [
+        [
+            InlineKeyboardButton("🏛️ Delhi (110001)", callback_data="pin_110001"),
+            InlineKeyboardButton("🌊 Mumbai (400001)", callback_data="pin_400001"),
+        ],
+        [
+            InlineKeyboardButton("💻 Bangalore (560001)", callback_data="pin_560001"),
+            InlineKeyboardButton("🌉 Kolkata (700001)", callback_data="pin_700001"),
+        ],
+        [
+            InlineKeyboardButton("🏖️ Chennai (600001)", callback_data="pin_600001"),
+            InlineKeyboardButton("🏰 Hyderabad (500001)", callback_data="pin_500001"),
+        ],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    if update.message:
+        await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+    elif update.callback_query:
+        await update.callback_query.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
 
 
 async def track_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -176,10 +247,11 @@ async def track_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
         return
 
-    loading_msg = await update.message.reply_text("🔍 Fetching product details... Please wait a moment.")
+    user_pin = database.get_user_pincode(user.id)
+    loading_msg = await update.message.reply_text(f"🔍 Fetching details for PIN <code>{user_pin}</code>... Please wait a moment.", parse_mode=ParseMode.HTML)
 
     # Run scraper in thread pool to prevent blocking asyncio event loop
-    product = await asyncio.to_thread(product_service.fetch_product, url)
+    product = await asyncio.to_thread(product_service.fetch_product, url, user_pin)
     if not product:
         await loading_msg.edit_text(
             "❌ <b>Could not extract details from this link.</b>\n\n"
@@ -218,6 +290,7 @@ async def track_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         target_price=target_price,
         current_price=curr_price,
         currency=currency,
+        pincode=user_pin,
     )
 
     title_escaped = html.escape(product["title"][:75])
@@ -231,6 +304,7 @@ async def track_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         f"💰 <b>Current Price:</b> <code>{currency}{curr_price:,.2f}</code>\n"
         f"🎯 <b>Target Price:</b> <code>{currency}{target_price:,.2f}</code>\n"
         f"📉 <b>Target Savings:</b> <code>{currency}{savings:,.2f} ({savings_pct:.1f}% OFF)</code>\n"
+        f"📍 <b>Delivery PIN:</b> <code>{user_pin}</code>\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
         f"🔔 I am actively monitoring this item and will alert you the moment the price drops!"
     )
@@ -307,10 +381,11 @@ async def list_products_command(update: Update, context: ContextTypes.DEFAULT_TY
         p_title = html.escape(p["title"][:38])
         safe_url = html.escape(p["url"])
 
+        p_pin = p.get("pincode") or "110001"
         entry = (
             f"• <b>ID <code>#{p['id']}</code>:</b> {platform_icon} <a href=\"{safe_url}\">{p_title}...</a>\n"
-            f"  💰 Current: <code>{curr_str}</code> ➔ Target: <code>{target_str}</code> "
-            f"<i>(Needs {p['currency']}{savings:,.2f} drop)</i>\n\n"
+            f"  💰 Current: <code>{curr_str}</code> ➔ Target: <code>{target_str}</code> (📍 <code>{p_pin}</code>)\n"
+            f"  <i>Needs {p['currency']}{savings:,.2f} drop</i>\n\n"
         )
         buttons = [
             InlineKeyboardButton(f"🛒 #{p['id']} View", url=p["url"]),
@@ -326,7 +401,10 @@ async def list_products_command(update: Update, context: ContextTypes.DEFAULT_TY
             current_keyboard.append(buttons)
 
     if current_text:
-        current_keyboard.append([InlineKeyboardButton("🗑️ Clear All Tracked Items", callback_data="clear_all")])
+        current_keyboard.append([
+            InlineKeyboardButton("📍 Delivery PIN Code", callback_data="pincode_menu"),
+            InlineKeyboardButton("🗑️ Clear All Items", callback_data="clear_all"),
+        ])
         chunks.append((current_text, current_keyboard))
 
     for idx, (chunk_text, chunk_kb) in enumerate(chunks):
@@ -378,10 +456,12 @@ async def handle_url_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if platform == "Unknown":
         return
 
-    loading = await update.message.reply_text(f"🔎 {platform} link detected! Fetching current price and details...")
+    user = update.effective_user
+    user_pin = database.get_user_pincode(user.id) if user else "110001"
+    loading = await update.message.reply_text(f"🔎 {platform} link detected! Checking live price for PIN <code>{user_pin}</code>...", parse_mode=ParseMode.HTML)
 
     # Run scraper in thread pool to prevent blocking asyncio event loop
-    product = await asyncio.to_thread(product_service.fetch_product, raw_text)
+    product = await asyncio.to_thread(product_service.fetch_product, raw_text, user_pin)
     if not product:
         await loading.edit_text(
             f"❌ <b>Could not extract details from this {platform} link.</b>\n\n"
@@ -409,7 +489,8 @@ async def handle_url_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
     caption = (
         f"{badge_escaped} <b>{title_escaped}...</b>\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
-        f"💰 <b>Current Price:</b> <code>{currency}{curr_price:,.2f}</code>\n\n"
+        f"💰 <b>Current Price:</b> <code>{currency}{curr_price:,.2f}</code>\n"
+        f"📍 <b>Delivery PIN:</b> <code>{user_pin}</code> (Change with <code>/pincode</code>)\n\n"
         f"🎯 <b>Select your desired price drop below:</b> or reply with <code>/track {product['url']} &lt;price&gt;</code>"
     )
 
@@ -470,6 +551,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             await query.message.reply_text("❌ Session expired. Please re-paste the product link.")
             return
 
+        user_pin = database.get_user_pincode(query.from_user.id)
         product_id = database.add_tracked_product(
             user_id=query.from_user.id,
             chat_id=query.message.chat_id,
@@ -481,6 +563,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             target_price=target_price,
             current_price=product["price"],
             currency=product["currency"],
+            pincode=user_pin,
         )
 
         title_escaped = html.escape(product["title"][:70])
@@ -493,6 +576,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             f"📦 <b>{title_escaped}...</b>\n\n"
             f"💰 <b>Current Price:</b> <code>{product['currency']}{product['price']:,.2f}</code>\n"
             f"🎯 <b>Target Price:</b> <code>{product['currency']}{target_price:,.2f}</code>\n"
+            f"📍 <b>Delivery PIN:</b> <code>{user_pin}</code>\n"
             f"━━━━━━━━━━━━━━━━━━━\n"
             f"🔔 I will notify you the moment the price drops to or below your target!"
         )
@@ -518,6 +602,22 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             await query.message.reply_text(f"🛑 Tracking stopped for product <code>#{product_id}</code>.", parse_mode=ParseMode.HTML)
         else:
             await query.message.reply_text(f"❌ Product <code>#{product_id}</code> was already removed.", parse_mode=ParseMode.HTML)
+
+    elif data.startswith("pin_"):
+        new_pin = data.split("_")[1]
+        database.set_user_pincode(query.from_user.id, new_pin)
+        await query.answer(f"📍 PIN code set to {new_pin}!", show_alert=True)
+        confirm_pin = (
+            f"✅ <b>Delivery PIN code updated to <code>{new_pin}</code>!</b>\n\n"
+            f"All future price checks, stock verification, and alerts will check prices for PIN code <b>{new_pin}</b>."
+        )
+        try:
+            await query.edit_message_text(confirm_pin, parse_mode=ParseMode.HTML)
+        except Exception:
+            await query.message.reply_text(confirm_pin, parse_mode=ParseMode.HTML)
+
+    elif data == "pincode_menu":
+        await pincode_command(update, context)
 
     elif data == "list_products":
         await list_products_command(update, context)
@@ -546,23 +646,25 @@ async def check_prices_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 
     logger.info(f"Checking prices for {len(products)} active tracked product(s)...")
 
-    # Group by (platform, item_id) to eliminate redundant network calls across different URL formats
+    # Group by (platform, item_id, pincode) to eliminate redundant network calls while respecting user pincodes
     prod_map: Dict[tuple, list] = {}
     for p in products:
-        key = (p.get("platform", "Unknown"), p.get("item_id") or p["url"])
-        prod_map.setdefault(key, []).append(p)
+        pin = p.get("pincode") or database.get_user_pincode(p["user_id"])
+        key = (p.get("platform", "Unknown"), p.get("item_id") or p["url"], pin)
+        prod_map.setdefault(key, []).append((p, pin))
 
-    for (platform_key, item_key), items in prod_map.items():
-        fetch_url = items[0]["url"]
+    for (platform_key, item_key, pin_key), items_with_pin in prod_map.items():
+        fetch_url = items_with_pin[0][0]["url"]
+        item_pin = pin_key
         try:
             # Run scraper in thread pool to prevent blocking asyncio event loop
-            prod_data = await asyncio.to_thread(product_service.fetch_product, fetch_url)
+            prod_data = await asyncio.to_thread(product_service.fetch_product, fetch_url, item_pin)
             if not prod_data or not prod_data.get("price") or prod_data["price"] <= 0:
                 continue
 
             new_price = prod_data["price"]
 
-            for item in items:
+            for item, pin in items_with_pin:
                 product_id = item["id"]
                 target_price = item["target_price"]
                 chat_id = item["chat_id"]
@@ -607,6 +709,7 @@ async def check_prices_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                         f"🔥 <b>Current Price:</b> <code>{currency}{new_price:,.2f}</code>\n"
                         f"🎯 <b>Your Target:</b> <code>{currency}{target_price:,.2f}</code>\n"
                         f"💰 <b>You Save:</b> <code>{currency}{savings:,.2f} ({savings_pct:.1f}% OFF)</code>\n"
+                        f"📍 <b>Delivery PIN:</b> <code>{pin}</code>\n"
                         f"━━━━━━━━━━━━━━━━━━━\n"
                         f"⚡ Target price reached! Click below to buy or stop tracking."
                     )
@@ -619,6 +722,7 @@ async def check_prices_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                         f"💰 <b>Current Price:</b> <code>{currency}{new_price:,.2f}</code>\n"
                         f"🎯 <b>Desired Set Price:</b> <code>{currency}{target_price:,.2f}</code>\n"
                         f"📈 <b>Difference:</b> <code>{currency}{diff:,.2f}</code> above your target\n"
+                        f"📍 <b>Delivery PIN:</b> <code>{pin}</code>\n"
                         f"━━━━━━━━━━━━━━━━━━━\n"
                         f"🕒 <i>Next automated check in 4 hours.</i>"
                     )
@@ -701,6 +805,9 @@ def main() -> None:
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("track", track_command))
     app.add_handler(CommandHandler("alert", track_command))
+    app.add_handler(CommandHandler("pincode", pincode_command))
+    app.add_handler(CommandHandler("setpin", pincode_command))
+    app.add_handler(CommandHandler("pin", pincode_command))
     app.add_handler(CommandHandler("products", list_products_command))
     app.add_handler(CommandHandler("alerts", list_products_command))
     app.add_handler(CommandHandler("tracked", list_products_command))

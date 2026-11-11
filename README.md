@@ -40,6 +40,7 @@ A full-featured Telegram bot that tracks product prices across **6 major e-comme
 | Command | Description | Example |
 |---|---|---|
 | `/start` | Launch menu & platform guide | `/start` |
+| `/pincode <PIN>` | Set your delivery PIN code for localized pricing & stock | `/pincode 110001` or `/pincode 560001` |
 | `/track <URL> <PRICE>` | Track item with target price | `/track https://www.croma.com/.../p/300652 56000`<br>`/track https://www.reliancedigital.in/.../p/493839309 56000`<br>`/track https://www.amazon.in/dp/B09G9BL5CP 75000` |
 | `/products` | View and manage all your tracked items | `/products` |
 | `/deltrack <ID>` | Stop tracking a specific item | `/deltrack 1` |

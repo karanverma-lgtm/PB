@@ -72,6 +72,12 @@ def run_tests():
     test_user_id = 999888777
     database.clear_user_products(test_user_id)
 
+    # Test Pincode functionality
+    database.set_user_pincode(test_user_id, "560001")
+    user_pin = database.get_user_pincode(test_user_id)
+    assert user_pin == "560001", f"Expected pincode 560001, got {user_pin}"
+    print("  ✅ User delivery PIN code storage & retrieval verified (560001).")
+
     # Test pending product caching across restarts
     sample_prod = fetched_products[0]
     database.save_pending_product(sample_prod)
@@ -93,12 +99,14 @@ def run_tests():
             target_price=prod["price"] * 0.9,
             current_price=prod["price"],
             currency=prod["currency"],
+            pincode=user_pin,
         )
         inserted_ids.append(pid)
 
     stored = database.get_user_products(test_user_id)
     assert len(stored) == len(fetched_products), f"Expected {len(fetched_products)} items, got {len(stored)}"
-    print(f"  ✅ Successfully tracked all {len(stored)} products in SQLite database.")
+    assert stored[0]["pincode"] == "560001", f"Expected stored item pincode 560001, got {stored[0].get('pincode')}"
+    print(f"  ✅ Successfully tracked all {len(stored)} products in SQLite database with custom delivery PIN.")
 
     # Cleanup test user entries
     database.clear_user_products(test_user_id)

@@ -24,6 +24,8 @@ elif os.getenv("DATABASE_PATH"):
 else:
     DB_FILE = os.path.join(os.path.dirname(__file__), "alerts.db")
 
+DEFAULT_PINCODE = os.getenv("DEFAULT_PINCODE", "110001")
+
 
 def get_db_connection() -> sqlite3.Connection:
     """Return a database connection with dictionary-like row factory and WAL mode."""
@@ -62,6 +64,17 @@ def init_db() -> None:
             """
         )
 
+        # User preferences and delivery pincode settings
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS user_settings (
+                user_id INTEGER PRIMARY KEY,
+                pincode TEXT DEFAULT '110001',
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+
         # Temporary table to persist 1-click discount button clicks across bot restarts
         cursor.execute(
             """
@@ -86,6 +99,12 @@ def init_db() -> None:
         if "platform" not in columns:
             try:
                 cursor.execute("ALTER TABLE tracked_products ADD COLUMN platform TEXT DEFAULT 'Amazon'")
+            except Exception:
+                pass
+
+        if "pincode" not in columns:
+            try:
+                cursor.execute("ALTER TABLE tracked_products ADD COLUMN pincode TEXT DEFAULT '110001'")
             except Exception:
                 pass
 
@@ -158,6 +177,40 @@ def get_pending_product(item_id: str) -> Optional[Dict[str, Any]]:
         return None
 
 
+def set_user_pincode(user_id: int, pincode: str) -> None:
+    """Set or update user's preferred delivery pincode."""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO user_settings (user_id, pincode, updated_at)
+            VALUES (?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(user_id) DO UPDATE SET
+                pincode = excluded.pincode,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (user_id, str(pincode).strip()),
+        )
+        conn.commit()
+
+
+def get_user_pincode(user_id: int) -> str:
+    """Get user's configured delivery pincode or fallback to default."""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT pincode FROM user_settings WHERE user_id = ?",
+                (user_id,),
+            )
+            row = cursor.fetchone()
+            if row and row["pincode"]:
+                return str(row["pincode"]).strip()
+    except Exception:
+        pass
+    return DEFAULT_PINCODE
+
+
 def add_tracked_product(
     user_id: int,
     chat_id: int,
@@ -169,8 +222,10 @@ def add_tracked_product(
     target_price: float,
     current_price: float,
     currency: str = "₹",
+    pincode: Optional[str] = None,
 ) -> int:
     """Add a new product price drop alert or update target price if already actively tracked."""
+    pin = pincode or get_user_pincode(user_id)
     with get_db_connection() as conn:
         cursor = conn.cursor()
         # Prevent duplicate active trackers for the same user and product
@@ -188,10 +243,10 @@ def add_tracked_product(
             cursor.execute(
                 """
                 UPDATE tracked_products
-                SET target_price = ?, current_price = ?, url = ?, image_url = ?, currency = ?
+                SET target_price = ?, current_price = ?, url = ?, image_url = ?, currency = ?, pincode = ?
                 WHERE id = ?
                 """,
-                (target_price, current_price, url, image_url, currency, product_id),
+                (target_price, current_price, url, image_url, currency, pin, product_id),
             )
             conn.commit()
             return product_id
@@ -200,9 +255,9 @@ def add_tracked_product(
             """
             INSERT INTO tracked_products (
                 user_id, chat_id, platform, asin, title, url, image_url,
-                target_price, initial_price, current_price, currency, is_active
+                target_price, initial_price, current_price, currency, pincode, is_active
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
             """,
             (
                 user_id,
@@ -216,6 +271,7 @@ def add_tracked_product(
                 current_price,
                 current_price,
                 currency,
+                pin,
             ),
         )
         conn.commit()
@@ -229,7 +285,7 @@ def get_user_products(user_id: int) -> List[Dict[str, Any]]:
         cursor.execute(
             """
             SELECT id, user_id, chat_id, platform, asin AS item_id, title, url, image_url,
-                   target_price, initial_price, current_price, currency, created_at
+                   target_price, initial_price, current_price, currency, pincode, created_at
             FROM tracked_products
             WHERE user_id = ? AND is_active = 1
             ORDER BY created_at DESC
@@ -246,7 +302,7 @@ def get_all_active_products() -> List[Dict[str, Any]]:
         cursor.execute(
             """
             SELECT id, user_id, chat_id, platform, asin AS item_id, title, url, image_url,
-                   target_price, initial_price, current_price, currency
+                   target_price, initial_price, current_price, currency, pincode
             FROM tracked_products
             WHERE is_active = 1
             """

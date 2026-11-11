@@ -35,7 +35,7 @@ except Exception:
 _CAMOUFOX_LOCK = threading.Lock()
 
 
-def fetch_page_with_camoufox(url: str, timeout_ms: int = 25000) -> Optional[str]:
+def fetch_page_with_camoufox(url: str, timeout_ms: int = 25000, pincode: Optional[str] = None) -> Optional[str]:
     """Render full dynamic JavaScript page using Camoufox stealth browser with single-instance memory protection."""
     if not CAMOUFOX_AVAILABLE:
         return None
@@ -49,6 +49,14 @@ def fetch_page_with_camoufox(url: str, timeout_ms: int = 25000) -> Optional[str]
         logger.info(f"🦊 Invoking Camoufox stealth browser for {url[:60]}...")
         with Camoufox(headless=True, humanize=True) as browser:
             page = browser.new_page()
+            if pincode:
+                pin = str(pincode).strip()
+                try:
+                    page.set_extra_http_headers({
+                        "Cookie": f"pincode={pin}; delivery_pincode={pin}; pin={pin}; _pincode={pin}"
+                    })
+                except Exception:
+                    pass
             page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
             page.wait_for_timeout(2000)
             rendered = page.content()
@@ -74,8 +82,16 @@ HEADERS = {
     "Sec-Fetch-User": "?1",
     "Upgrade-Insecure-Requests": "1",
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-    "Cookie": "pincode=400001; delivery_pincode=400001; pin=400001; _pincode=400001; city=Mumbai",
+    "Cookie": "pincode=110001; delivery_pincode=110001; pin=110001; _pincode=110001; city=Delhi",
 }
+
+
+def get_headers_for_pincode(pincode: Optional[str] = "110001") -> Dict[str, str]:
+    """Generate realistic browser headers configured with user delivery pincode."""
+    pin = str(pincode).strip() if pincode else "110001"
+    hdrs = dict(HEADERS)
+    hdrs["Cookie"] = f"pincode={pin}; delivery_pincode={pin}; pin={pin}; _pincode={pin}; location_pincode={pin}; city_pincode={pin}"
+    return hdrs
 
 # Dedicated clean browser headers for Amazon (no Indian pincode cookies that trigger bot WAF)
 AMAZON_HEADERS = {
@@ -207,7 +223,7 @@ def extract_amazon_asin(text: str) -> Optional[str]:
     return None
 
 
-def parse_amazon_soup(soup: BeautifulSoup, asin: str, canonical_url: str) -> Optional[Dict[str, Any]]:
+def parse_amazon_soup(soup: BeautifulSoup, asin: str, canonical_url: str, pincode: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Parse product title, price, currency, and image from Amazon HTML BeautifulSoup."""
     title = None
     for t_sel in ["span#productTitle", "h1#title", "span#title", "h1.a-size-large"]:
@@ -324,10 +340,11 @@ def parse_amazon_soup(soup: BeautifulSoup, asin: str, canonical_url: str) -> Opt
         "currency": currency,
         "url": canonical_url,
         "image_url": img_url,
+        "pincode": str(pincode or "110001"),
     }
 
 
-def fetch_amazon_product(url_or_asin: str) -> Optional[Dict[str, Any]]:
+def fetch_amazon_product(url_or_asin: str, pincode: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Fetch live product details from Amazon with buy-box verification and Camoufox stealth escalation."""
     clean_target = clean_url_from_text(url_or_asin)
     try:
@@ -372,7 +389,7 @@ def fetch_amazon_product(url_or_asin: str) -> Optional[Dict[str, Any]]:
         # Parse with BeautifulSoup if curl_cffi succeeded
         if res and res.status_code == 200:
             soup = BeautifulSoup(res.text, "html.parser")
-            parsed = parse_amazon_soup(soup, asin, canonical_url)
+            parsed = parse_amazon_soup(soup, asin, canonical_url, pincode=pincode)
             if parsed:
                 return parsed
 
@@ -380,10 +397,10 @@ def fetch_amazon_product(url_or_asin: str) -> Optional[Dict[str, Any]]:
         if CAMOUFOX_AVAILABLE:
             logger.info(f"curl_cffi blocked or incomplete for Amazon ({asin}). Escalating to Camoufox stealth browser...")
             for cam_target in [canonical_url, mobile_url]:
-                cam_html = fetch_page_with_camoufox(cam_target)
+                cam_html = fetch_page_with_camoufox(cam_target, pincode=pincode)
                 if cam_html:
                     soup = BeautifulSoup(cam_html, "html.parser")
-                    parsed = parse_amazon_soup(soup, asin, canonical_url)
+                    parsed = parse_amazon_soup(soup, asin, canonical_url, pincode=pincode)
                     if parsed:
                         logger.info(f"✅ Camoufox successfully resolved Amazon product #{asin}!")
                         return parsed
@@ -409,7 +426,7 @@ def extract_flipkart_id(url: str) -> str:
     return "FLIPKART_ITEM"
 
 
-def parse_flipkart_soup(soup: BeautifulSoup, url: str) -> Optional[Dict[str, Any]]:
+def parse_flipkart_soup(soup: BeautifulSoup, url: str, pincode: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Parse product title, price, currency, image, and item ID from Flipkart HTML."""
     # Title
     title = None
@@ -469,28 +486,31 @@ def parse_flipkart_soup(soup: BeautifulSoup, url: str) -> Optional[Dict[str, Any
         "currency": "₹",
         "url": url,
         "image_url": img_url,
+        "pincode": str(pincode or "110001"),
     }
 
 
-def fetch_flipkart_product(url: str) -> Optional[Dict[str, Any]]:
+def fetch_flipkart_product(url: str, pincode: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Fetch live product details from Flipkart with Camoufox stealth escalation."""
     clean_target = clean_url_from_text(url)
     try:
-        # 1. Primary: Fast TLS curl_cffi fetch
-        res = requests.get(clean_target, impersonate="chrome120", headers=HEADERS, allow_redirects=True, timeout=20)
+        # 1. Primary: Fast TLS curl_cffi fetch with pincode cookies & headers
+        hdrs = get_headers_for_pincode(pincode)
+        hdrs["X-User-Pincode"] = str(pincode or "110001").strip()
+        res = requests.get(clean_target, impersonate="chrome120", headers=hdrs, allow_redirects=True, timeout=20)
         if res.status_code == 200:
             soup = BeautifulSoup(res.text, "html.parser")
-            parsed = parse_flipkart_soup(soup, res.url)
+            parsed = parse_flipkart_soup(soup, res.url, pincode=pincode)
             if parsed:
                 return parsed
 
         # 2. Automated Secondary Fallback: Camoufox stealth browser
         if CAMOUFOX_AVAILABLE:
             logger.info(f"curl_cffi failed on Flipkart. Escalating to Camoufox stealth browser...")
-            cam_html = fetch_page_with_camoufox(clean_target)
+            cam_html = fetch_page_with_camoufox(clean_target, pincode=pincode)
             if cam_html:
                 soup = BeautifulSoup(cam_html, "html.parser")
-                parsed = parse_flipkart_soup(soup, clean_target)
+                parsed = parse_flipkart_soup(soup, clean_target, pincode=pincode)
                 if parsed:
                     logger.info(f"✅ Camoufox successfully resolved Flipkart product!")
                     return parsed
@@ -505,11 +525,12 @@ def fetch_flipkart_product(url: str) -> Optional[Dict[str, Any]]:
 # 3. JioMart Scraper
 # =====================================================================
 
-def fetch_jiomart_product(url: str) -> Optional[Dict[str, Any]]:
-    """Fetch live product details from JioMart."""
+def fetch_jiomart_product(url: str, pincode: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Fetch live product details from JioMart with user pincode."""
     clean_target = clean_url_from_text(url)
     try:
-        res = requests.get(clean_target, impersonate="chrome120", headers=HEADERS, allow_redirects=True, timeout=20)
+        hdrs = get_headers_for_pincode(pincode)
+        res = requests.get(clean_target, impersonate="chrome120", headers=hdrs, allow_redirects=True, timeout=20)
         if res.status_code != 200:
             logger.error(f"JioMart HTTP {res.status_code} for {clean_target}")
             return None
@@ -593,6 +614,7 @@ def fetch_jiomart_product(url: str) -> Optional[Dict[str, Any]]:
             "currency": "₹",
             "url": res.url,
             "image_url": img_url,
+            "pincode": str(pincode or "110001"),
         }
     except Exception as e:
         logger.error(f"Error scraping JioMart: {e}")
@@ -603,11 +625,12 @@ def fetch_jiomart_product(url: str) -> Optional[Dict[str, Any]]:
 # 4. Reliance Digital Scraper
 # =====================================================================
 
-def fetch_reliancedigital_product(url: str) -> Optional[Dict[str, Any]]:
-    """Fetch live product details from Reliance Digital."""
+def fetch_reliancedigital_product(url: str, pincode: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Fetch live product details from Reliance Digital with user pincode."""
     clean_target = clean_url_from_text(url)
     try:
-        res = requests.get(clean_target, impersonate="chrome120", headers=HEADERS, allow_redirects=True, timeout=20)
+        hdrs = get_headers_for_pincode(pincode)
+        res = requests.get(clean_target, impersonate="chrome120", headers=hdrs, allow_redirects=True, timeout=20)
         if res.status_code != 200:
             logger.error(f"Reliance Digital HTTP {res.status_code} for {clean_target}")
             return None
@@ -669,6 +692,7 @@ def fetch_reliancedigital_product(url: str) -> Optional[Dict[str, Any]]:
             "currency": "₹",
             "url": res.url,
             "image_url": img_url,
+            "pincode": str(pincode or "110001"),
         }
     except Exception as e:
         logger.error(f"Error scraping Reliance Digital: {e}")
@@ -679,11 +703,12 @@ def fetch_reliancedigital_product(url: str) -> Optional[Dict[str, Any]]:
 # 5. Croma Scraper
 # =====================================================================
 
-def fetch_croma_product(url: str) -> Optional[Dict[str, Any]]:
-    """Fetch live product details from Croma."""
+def fetch_croma_product(url: str, pincode: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Fetch live product details from Croma with user pincode."""
     clean_target = clean_url_from_text(url)
     try:
-        res = requests.get(clean_target, impersonate="chrome120", headers=HEADERS, allow_redirects=True, timeout=20)
+        hdrs = get_headers_for_pincode(pincode)
+        res = requests.get(clean_target, impersonate="chrome120", headers=hdrs, allow_redirects=True, timeout=20)
         if res.status_code != 200:
             logger.error(f"Croma HTTP {res.status_code} for {clean_target}")
             return None
@@ -738,6 +763,7 @@ def fetch_croma_product(url: str) -> Optional[Dict[str, Any]]:
             "currency": "₹",
             "url": res.url,
             "image_url": img_url,
+            "pincode": str(pincode or "110001"),
         }
     except Exception as e:
         logger.error(f"Error scraping Croma: {e}")
@@ -748,11 +774,12 @@ def fetch_croma_product(url: str) -> Optional[Dict[str, Any]]:
 # 6. Samsung India Scraper
 # =====================================================================
 
-def fetch_samsung_product(url: str) -> Optional[Dict[str, Any]]:
+def fetch_samsung_product(url: str, pincode: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Fetch live product details from Samsung India with variant resolution."""
     clean_target = clean_url_from_text(url)
     try:
-        res = requests.get(clean_target, impersonate="chrome120", headers=HEADERS, allow_redirects=True, timeout=20)
+        hdrs = get_headers_for_pincode(pincode)
+        res = requests.get(clean_target, impersonate="chrome120", headers=hdrs, allow_redirects=True, timeout=20)
         if res.status_code != 200:
             logger.error(f"Samsung HTTP {res.status_code} for {clean_target}")
             return None
@@ -846,6 +873,7 @@ def fetch_samsung_product(url: str) -> Optional[Dict[str, Any]]:
             "currency": "₹",
             "url": res.url,
             "image_url": img_url,
+            "pincode": str(pincode or "110001"),
         }
     except Exception as e:
         logger.error(f"Error scraping Samsung: {e}")
@@ -856,23 +884,23 @@ def fetch_samsung_product(url: str) -> Optional[Dict[str, Any]]:
 # Unified Fetcher
 # =====================================================================
 
-def fetch_product(url_or_text: str) -> Optional[Dict[str, Any]]:
-    """Automatically detect platform and fetch live product details."""
+def fetch_product(url_or_text: str, pincode: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Automatically detect platform and fetch live product details for specified pincode."""
     clean_target = clean_url_from_text(url_or_text)
     platform = detect_platform(clean_target)
 
     if platform == "RelianceDigital":
-        return fetch_reliancedigital_product(clean_target)
+        return fetch_reliancedigital_product(clean_target, pincode=pincode)
     elif platform == "Croma":
-        return fetch_croma_product(clean_target)
+        return fetch_croma_product(clean_target, pincode=pincode)
     elif platform == "JioMart":
-        return fetch_jiomart_product(clean_target)
+        return fetch_jiomart_product(clean_target, pincode=pincode)
     elif platform == "Samsung":
-        return fetch_samsung_product(clean_target)
+        return fetch_samsung_product(clean_target, pincode=pincode)
     elif platform == "Flipkart":
-        return fetch_flipkart_product(clean_target)
+        return fetch_flipkart_product(clean_target, pincode=pincode)
     elif platform == "Amazon":
-        return fetch_amazon_product(clean_target)
+        return fetch_amazon_product(clean_target, pincode=pincode)
     else:
         # Fallback cascade across supported platforms
         for fetcher in [
@@ -883,7 +911,7 @@ def fetch_product(url_or_text: str) -> Optional[Dict[str, Any]]:
             fetch_croma_product,
             fetch_samsung_product,
         ]:
-            res = fetcher(clean_target)
+            res = fetcher(clean_target, pincode=pincode)
             if res:
                 return res
         return None
