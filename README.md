@@ -18,9 +18,14 @@ A full-featured Telegram bot that tracks product prices across **6 major e-comme
    - **Method A:** Just paste or share any product link from any of the 6 platforms into the chat! The bot automatically detects the platform, fetches the product photo, title, and current price, and displays quick 1-click discount buttons (`5% Drop`, `10% Drop`, `15% Drop`).
    - **Method B:** Use `/track <PRODUCT_URL> <TARGET_PRICE>` to set an exact target price.
 
-3. **⏰ 24/7 Background Price Monitoring**
-   - Runs a background worker checking all active tracked items across all platforms every 5 minutes.
-   - When the price drops to or below your target, you receive an instant alert with product photo, amount saved, and direct link to buy.
+3. **⏰ 24/7 Background Price Monitoring (Every 4 Hours)**
+   - Runs an automated background worker checking all active tracked items every 4 hours (`14,400s`, configurable via `CHECK_INTERVAL`).
+   - **Periodic Updates:** Every time the bot checks an item, it sends you a status notification showing the current live price, your target price, how much is remaining, and a 1-click **"🛑 Stop Tracking"** button.
+   - **Price Drop Alerts:** When the price drops to or below your target, you receive an instant alert with product photo, amount saved, and direct link to buy.
+
+4. **🛡️ Dual-Layer Anti-Bot Bypasses**
+   - **Layer 1 (`curl_cffi`):** Ultra-fast browser TLS/JA3/JA4 fingerprint impersonation (`chrome124`, `safari17`).
+   - **Layer 2 (`Camoufox`):** Automated secondary fallback using a C++ engine-level patched stealth Firefox browser to solve challenges and bypass heavy WAF gates.
 
 4. **📋 Tracked Items Dashboard**
    - Run `/products` or `/alerts` to see all items you are monitoring, categorized with platform badges (📦 Amazon, 🛍️ Flipkart, 🟢 JioMart, 🔴 Reliance Digital, ⚪ Croma, 🌌 Samsung), current vs target prices, and 1-click buttons to stop tracking.
