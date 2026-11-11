@@ -27,6 +27,7 @@ def get_db_connection() -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.execute("PRAGMA busy_timeout=5000;")
+    conn.execute("PRAGMA wal_autocheckpoint=1000;")
     return conn
 
 
@@ -90,6 +91,8 @@ def init_db() -> None:
         cursor.execute(
             "CREATE INDEX IF NOT EXISTS idx_products_user ON tracked_products (user_id, is_active)"
         )
+        # Prune stale pending button sessions older than 7 days
+        cursor.execute("DELETE FROM pending_products WHERE updated_at < datetime('now', '-7 days')")
         conn.commit()
 
 
