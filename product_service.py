@@ -415,6 +415,52 @@ def fetch_amazon_product(url_or_asin: str, pincode: Optional[str] = None) -> Opt
 # 2. Flipkart Scraper
 # =====================================================================
 
+def resolve_flipkart_url(target: str) -> tuple:
+    """Resolve Flipkart app short links (dl.flipkart.com/s/...) to canonical desktop URLs and extract context price."""
+    import urllib.parse
+    import base64
+    clean = clean_url_from_text(target)
+    ctx_price = None
+
+    if "dl.flipkart.com" in clean or "/s/" in clean:
+        try:
+            r = requests.get(clean, impersonate="chrome120", allow_redirects=False, timeout=10)
+            loc = r.headers.get("Location") or r.headers.get("location")
+            if loc:
+                clean = loc
+        except Exception as e:
+            logger.debug(f"Flipkart redirect resolve failed: {e}")
+
+    # Extract displayPrice from ctx if present in query parameters
+    try:
+        parsed = urllib.parse.urlparse(clean)
+        qs = urllib.parse.parse_qs(parsed.query)
+        if "ctx" in qs:
+            d_ctx = json.loads(base64.b64decode(qs["ctx"][0]).decode("utf-8", errors="ignore"))
+            dp = d_ctx.get("displayPrice")
+            if dp and str(dp).replace(".", "").isdigit():
+                ctx_price = float(dp)
+    except Exception:
+        pass
+
+    # Convert mobile app dl links to standard desktop domain
+    clean = clean.replace("dl.flipkart.com/dl/", "www.flipkart.com/").replace("dl.flipkart.com/", "www.flipkart.com/")
+
+    # Strip noisy app/hyperlocal query params that degrade desktop rendering, but preserve pid
+    try:
+        parsed = urllib.parse.urlparse(clean)
+        qs = urllib.parse.parse_qs(parsed.query)
+        pid = qs.get("pid", [None])[0]
+        if pid:
+            clean = f"https://www.flipkart.com{parsed.path}?pid={pid}"
+        else:
+            clean = f"https://www.flipkart.com{parsed.path}"
+    except Exception:
+        pass
+
+    return clean, ctx_price
+
+
 def extract_flipkart_id(url: str) -> str:
     """Extract unique product identifier or clean URL for Flipkart."""
     pid_match = re.search(r"pid=([A-Z0-9]+)", url, re.IGNORECASE)
@@ -426,34 +472,70 @@ def extract_flipkart_id(url: str) -> str:
     return "FLIPKART_ITEM"
 
 
-def parse_flipkart_soup(soup: BeautifulSoup, url: str, pincode: Optional[str] = None) -> Optional[Dict[str, Any]]:
+def parse_flipkart_soup(soup: BeautifulSoup, url: str, pincode: Optional[str] = None, fallback_price: Optional[float] = None) -> Optional[Dict[str, Any]]:
     """Parse product title, price, currency, image, and item ID from Flipkart HTML."""
     # Title
     title = None
     for sel in ["span.VU-ZEz", "span.B_NuCI", "h1 span", "h1"]:
         elem = soup.select_one(sel)
         if elem and elem.get_text(strip=True):
-            title = elem.get_text(strip=True)
-            break
+            cand = elem.get_text(strip=True)
+            if "..." not in cand:
+                title = cand
+                break
+
+    if not title and soup.title and soup.title.string:
+        raw_t = soup.title.string
+        for suff in ["Price in India - Buy", "Online at Best Price in India - Flipkart", "Price in India", "Flipkart.com"]:
+            if suff in raw_t:
+                raw_t = raw_t.split(suff)[0].strip(" -:")
+        if len(raw_t) > 5:
+            title = raw_t
+
     if not title:
         og_title = soup.find("meta", property="og:title")
-        if og_title:
-            title = og_title.get("content", "").replace("Online at Best Price in India - Flipkart", "").strip()
+        if og_title and og_title.get("content"):
+            title = og_title.get("content").split("Price in India")[0].strip(" -:")
 
-    if not title and soup.title:
-        title = soup.title.get_text(strip=True).replace("Online at Best Price in India - Flipkart", "").strip()
+    if title:
+        for trim in ["...more", "... more", "..."]:
+            if title.endswith(trim):
+                title = title[:-len(trim)].strip()
 
     if not title:
         return None
 
     # Price
     price = None
-    p_elem = soup.select_one("div.Nx9bqj") or soup.select_one("div._30jeq3")
+    p_elem = soup.select_one("div.Nx9bqj") or soup.select_one("div._30jeq3") or soup.select_one("div.C_ph35")
     if p_elem:
         m = re.search(r"[\d,]+", p_elem.get_text())
         if m:
             price = float(m.group(0).replace(",", ""))
 
+    # Fallback A: Search inside window.__INITIAL_STATE__
+    if price is None:
+        idx = str(soup).find("window.__INITIAL_STATE__")
+        if idx != -1:
+            m_p = re.findall(r'"(?:finalPrice|specialPrice|sellingPrice)":\s*(\d+)', str(soup)[idx:idx+800000])
+            if m_p:
+                for cand in m_p:
+                    v = float(cand)
+                    if v > 10:
+                        price = v
+                        break
+
+    # Fallback B: JSON schema price
+    if price is None:
+        m_schema = re.findall(r'"price":\s*(\d+)', str(soup))
+        if m_schema:
+            for cand in m_schema:
+                v = float(cand)
+                if v > 10:
+                    price = v
+                    break
+
+    # Fallback C: Visible text nodes matching ₹
     if price is None:
         for text_node in soup.find_all(string=re.compile(r"₹\s*[\d,]+")):
             p_text = text_node.strip()
@@ -466,6 +548,10 @@ def parse_flipkart_soup(soup: BeautifulSoup, url: str, pincode: Optional[str] = 
                     price = val
                     break
 
+    # Fallback D: displayPrice from short-link query context
+    if price is None and fallback_price and fallback_price > 10:
+        price = fallback_price
+
     if price is None:
         return None
 
@@ -474,6 +560,10 @@ def parse_flipkart_soup(soup: BeautifulSoup, url: str, pincode: Optional[str] = 
     img_matches = re.findall(r"https://rukminim\d*\.flixcart\.com/image/[^\"\'\s]+", str(soup))
     if img_matches:
         img_url = img_matches[0]
+    if not img_url:
+        og_img = soup.find("meta", property="og:image")
+        if og_img and og_img.get("content"):
+            img_url = og_img.get("content")
 
     item_id = extract_flipkart_id(url)
 
@@ -492,7 +582,7 @@ def parse_flipkart_soup(soup: BeautifulSoup, url: str, pincode: Optional[str] = 
 
 def fetch_flipkart_product(url: str, pincode: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Fetch live product details from Flipkart with Camoufox stealth escalation."""
-    clean_target = clean_url_from_text(url)
+    clean_target, ctx_price = resolve_flipkart_url(url)
     try:
         # 1. Primary: Fast TLS curl_cffi fetch with pincode cookies & headers
         hdrs = get_headers_for_pincode(pincode)
@@ -500,7 +590,7 @@ def fetch_flipkart_product(url: str, pincode: Optional[str] = None) -> Optional[
         res = requests.get(clean_target, impersonate="chrome120", headers=hdrs, allow_redirects=True, timeout=20)
         if res.status_code == 200:
             soup = BeautifulSoup(res.text, "html.parser")
-            parsed = parse_flipkart_soup(soup, res.url, pincode=pincode)
+            parsed = parse_flipkart_soup(soup, res.url, pincode=pincode, fallback_price=ctx_price)
             if parsed:
                 return parsed
 
@@ -510,7 +600,7 @@ def fetch_flipkart_product(url: str, pincode: Optional[str] = None) -> Optional[
             cam_html = fetch_page_with_camoufox(clean_target, pincode=pincode)
             if cam_html:
                 soup = BeautifulSoup(cam_html, "html.parser")
-                parsed = parse_flipkart_soup(soup, clean_target, pincode=pincode)
+                parsed = parse_flipkart_soup(soup, clean_target, pincode=pincode, fallback_price=ctx_price)
                 if parsed:
                     logger.info(f"✅ Camoufox successfully resolved Flipkart product!")
                     return parsed

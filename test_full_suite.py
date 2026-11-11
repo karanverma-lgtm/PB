@@ -40,6 +40,7 @@ def run_tests():
     live_targets = [
         ("Amazon", "https://www.amazon.in/dp/B09G9BL5CP"),
         ("Flipkart", "https://www.flipkart.com/apple-iphone-15-black-128-gb/p/itm6ac6485515ae4"),
+        ("Flipkart Short Link", "https://dl.flipkart.com/s/fNh4ycuuuN"),
         ("Croma", "https://www.croma.com/apple-iphone-15-128gb-black-/p/300652"),
         ("Reliance Digital", "https://www.reliancedigital.in/apple-iphone-15-128gb-black/p/493839309"),
         ("JioMart", "https://www.jiomart.com/product/apple-iphone-15-128gb-blue-mhxt4j-17504497"),
