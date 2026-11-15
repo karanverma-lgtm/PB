@@ -83,11 +83,15 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     text = (
         f"👋 <b>Welcome to Price Drop Alert Bot, {name}!</b>\n\n"
-        "🛍️ Never miss a deal! Send me any product link from <b>6 major platforms</b>, set your desired target price, "
-        "and I will notify you the moment the price drops!\n\n"
+        "🛍️ Never miss a deal! Send me any product link from <b>10 major platforms</b>, set your desired target price, "
+        "and I will notify you the moment the price drops or when out-of-stock items restock!\n\n"
         "⚡ <b>Supported Platforms:</b>\n"
-        "• 📦 <b>Amazon India & Global</b> (<code>amazon.in</code>, <code>amzn.to</code>, <code>amazon.com</code>)\n"
+        "• 📦 <b>Amazon India & Global</b> (<code>amazon.in</code>, <code>amzn.to</code>)\n"
         "• 🛍️ <b>Flipkart</b> (<code>flipkart.com</code>, <code>dl.flipkart.com</code>)\n"
+        "• 🔴 <b>Myntra</b> (<code>myntra.com</code>)\n"
+        "• 🌸 <b>Nykaa</b> (<code>nykaa.com</code>)\n"
+        "• ✨ <b>Tira Beauty</b> (<code>tirabeauty.com</code>)\n"
+        "• 🛍️ <b>Meesho</b> (<code>meesho.com</code>)\n"
         "• 🟢 <b>JioMart</b> (<code>jiomart.com</code>)\n"
         "• 🔴 <b>Reliance Digital</b> (<code>reliancedigital.in</code>)\n"
         "• ⚪ <b>Croma</b> (<code>croma.com</code>)\n"
@@ -125,7 +129,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "📚 <b>Price Drop Tracker Guide</b>\n\n"
         "🛒 <b>Tracking an Item:</b>\n"
         "<b>Method 1 (Fastest):</b>\n"
-        "Just copy any product link from Amazon, Flipkart, JioMart, Reliance Digital, Croma, or Samsung and paste it into this chat! "
+        "Just copy any product link from Amazon, Flipkart, Myntra, Nykaa, Tira, Meesho, JioMart, Reliance Digital, Croma, or Samsung and paste it into this chat! "
         "The bot will automatically fetch the item and let you pick your target price.\n\n"
         "<b>Method 2 (Command):</b>\n"
         "<code>/track &lt;PRODUCT_LINK&gt; &lt;DESIRED_PRICE&gt;</code>\n\n"
@@ -135,6 +139,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "⚡ <b>Examples across platforms:</b>\n"
         "• <code>/track https://www.amazon.in/dp/B09G9BL5CP 75000</code>\n"
         "• <code>/track https://www.flipkart.com/... 55000</code>\n"
+        "• <code>/track https://www.myntra.com/.../buy 1100</code>\n"
+        "• <code>/track https://www.nykaa.com/.../p/821979 90</code>\n"
+        "• <code>/track https://www.tirabeauty.com/product/... 90</code>\n"
+        "• <code>/track https://www.meesho.com/.../p/... 450</code>\n"
         "• <code>/track https://www.croma.com/.../p/300652 56000</code>\n"
         "• <code>/track https://www.reliancedigital.in/.../p/493839309 56000</code>\n"
         "• <code>/track https://www.jiomart.com/... 56000</code>\n"
@@ -386,6 +394,10 @@ async def list_products_command(update: Update, context: ContextTypes.DEFAULT_TY
         "RelianceDigital": "🔴",
         "Croma": "⚪",
         "Samsung": "🌌",
+        "Myntra": "🔴",
+        "Nykaa": "🌸",
+        "Tira": "✨",
+        "Meesho": "🛍️",
     }
 
     chunks = []
@@ -1029,7 +1041,7 @@ def main() -> None:
     print("\n" + "=" * 65)
     print("🛍️ Multi-Platform Price Drop Bot (@Stockmightybot) Live!")
     print("=" * 65)
-    print("Monitoring Amazon, Flipkart, JioMart, Reliance Digital, Croma & Samsung...\n")
+    print("Monitoring 10 Platforms: Amazon, Flipkart, Myntra, Nykaa, Tira, Meesho, JioMart, Reliance Digital, Croma & Samsung...\n")
 
     app.run_polling(drop_pending_updates=True)
 

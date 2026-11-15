@@ -1,12 +1,16 @@
 """Product Scraping & Price Extraction Service for Indian & Global E-Commerce.
 
-Supports 6 major platforms:
+Supports 10 major platforms:
 1. Amazon (amazon.in, amazon.com, amzn.to, amzn.in)
 2. Flipkart (flipkart.com, dl.flipkart.com)
-3. JioMart (jiomart.com)
-4. Reliance Digital (reliancedigital.in)
-5. Croma (croma.com)
-6. Samsung India (samsung.com/in)
+3. Myntra (myntra.com)
+4. Nykaa (nykaa.com)
+5. Tira Beauty (tirabeauty.com)
+6. Meesho (meesho.com)
+7. JioMart (jiomart.com)
+8. Reliance Digital (reliancedigital.in)
+9. Croma (croma.com)
+10. Samsung India (samsung.com/in)
 
 Uses curl_cffi for realistic browser TLS fingerprinting, location cookies,
 and robust selector cascading to reliably extract live prices, titles, images, and item IDs.
@@ -113,7 +117,7 @@ def clean_url_from_text(raw_text: str) -> str:
 
 
 def detect_platform(url_or_text: str) -> str:
-    """Detect whether a link is from Amazon, Flipkart, JioMart, Reliance Digital, Croma, or Samsung."""
+    """Detect whether a link is from Amazon, Flipkart, JioMart, Reliance Digital, Croma, Samsung, Myntra, Nykaa, Tira, or Meesho."""
     text = url_or_text.lower().strip()
     if "reliancedigital.in" in text:
         return "RelianceDigital"
@@ -125,6 +129,14 @@ def detect_platform(url_or_text: str) -> str:
         return "Samsung"
     if "flipkart.com" in text or "dl.flipkart.com" in text:
         return "Flipkart"
+    if "myntra.com" in text:
+        return "Myntra"
+    if "nykaa.com" in text:
+        return "Nykaa"
+    if "tirabeauty.com" in text or "tira." in text:
+        return "Tira"
+    if "meesho.com" in text:
+        return "Meesho"
     if "amazon." in text or "amzn." in text or re.match(r"^[A-Z0-9]{10}$", url_or_text.strip()):
         return "Amazon"
     return "Unknown"
@@ -1078,6 +1090,501 @@ def fetch_samsung_product(url: str, pincode: Optional[str] = None) -> Optional[D
 
 
 # =====================================================================
+# 7. Myntra Scraper
+# =====================================================================
+
+def extract_myntra_id(url: str) -> str:
+    """Extract style ID from Myntra URL."""
+    m = re.search(r"/(\d+)(?:/buy|[/?]|$)", url)
+    return m.group(1) if m else "MYNTRA_ITEM"
+
+
+def parse_myntra_soup(soup: BeautifulSoup, raw_html: str, url: str, pincode: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Parse product title, price, currency, image, and item ID from Myntra HTML."""
+    title, price, item_id, img_url = None, None, None, None
+    in_stock = True
+
+    # 1. Search inside window.__myx script
+    idx = raw_html.find("window.__myx = ")
+    if idx != -1:
+        brace_start = raw_html.find("{", idx)
+        depth = 0
+        myx_str = None
+        for i in range(brace_start, len(raw_html)):
+            if raw_html[i] == "{":
+                depth += 1
+            elif raw_html[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    myx_str = raw_html[brace_start:i+1]
+                    break
+        if myx_str:
+            try:
+                d = json.loads(myx_str)
+                pdp = d.get("pdpData", {})
+                title = pdp.get("name")
+                p_dict = pdp.get("price", {})
+                if p_dict:
+                    val = p_dict.get("discounted") or p_dict.get("mrp")
+                    if val:
+                        price = float(val)
+                item_id = str(pdp.get("id"))
+                albums = pdp.get("media", {}).get("albums", [])
+                if albums:
+                    imgs = albums[0].get("images", [])
+                    if imgs:
+                        img_url = imgs[0].get("src")
+                        if "($height)" in img_url:
+                            img_url = img_url.replace("($height)", "720").replace("($width)", "540").replace("($qualityPercentage)", "90")
+                sizes = pdp.get("sizes", [])
+                if sizes:
+                    in_stock = any(s.get("available") for s in sizes)
+                elif "inStock" in pdp:
+                    in_stock = bool(pdp.get("inStock"))
+            except Exception:
+                pass
+
+    # 2. JSON-LD Fallback
+    if not title or price is None:
+        for s in soup.find_all("script", type="application/ld+json"):
+            try:
+                ld = json.loads(s.string)
+                if isinstance(ld, dict) and ld.get("@type") == "Product":
+                    if not title:
+                        title = ld.get("name")
+                    if not img_url:
+                        img = ld.get("image")
+                        img_url = img[0] if isinstance(img, list) else img
+                    if price is None and "offers" in ld:
+                        offers = ld.get("offers", {})
+                        if isinstance(offers, dict) and offers.get("price"):
+                            price = float(offers["price"])
+                        if "availability" in offers:
+                            in_stock = "outofstock" not in str(offers.get("availability")).lower()
+            except Exception:
+                pass
+
+    # Fallbacks from DOM
+    if not item_id:
+        item_id = extract_myntra_id(url)
+    if not title:
+        h1 = soup.select_one("h1.pdp-title") or soup.select_one("h1")
+        if h1:
+            title = h1.get_text(strip=True)
+    if not img_url:
+        img_tag = soup.select_one("div.image-grid-image") or soup.find("meta", property="og:image")
+        if img_tag:
+            img_url = img_tag.get("style", "") if img_tag.name == "div" else img_tag.get("content")
+            if img_url and "url(" in img_url:
+                m_u = re.search(r'url\("?([^"\)]+)"?\)', img_url)
+                if m_u:
+                    img_url = m_u.group(1)
+
+    if "out of stock" in raw_html.lower() or "outofstock" in raw_html.lower():
+        in_stock = False
+
+    if not in_stock and price is None:
+        price = 0.0
+
+    if not title or price is None:
+        return None
+
+    return {
+        "platform": "Myntra",
+        "platform_badge": "🔴 Myntra",
+        "item_id": item_id,
+        "title": title,
+        "price": round(price, 2) if price else 0.0,
+        "currency": "₹",
+        "url": url,
+        "image_url": img_url,
+        "pincode": str(pincode or "110001"),
+        "in_stock": in_stock,
+    }
+
+
+def fetch_myntra_product(url: str, pincode: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Fetch live product details from Myntra with pincode support."""
+    clean_target = clean_url_from_text(url)
+    try:
+        hdrs = get_headers_for_pincode(pincode)
+        res = requests.get(clean_target, impersonate="chrome124", headers=hdrs, allow_redirects=True, timeout=20)
+        if res.status_code == 200:
+            soup = BeautifulSoup(res.text, "html.parser")
+            parsed = parse_myntra_soup(soup, res.text, res.url, pincode=pincode)
+            if parsed:
+                return parsed
+
+        # Secondary Camoufox fallback
+        if CAMOUFOX_AVAILABLE:
+            logger.info(f"curl_cffi failed on Myntra. Escalating to Camoufox stealth browser...")
+            cam_html = fetch_page_with_camoufox(clean_target, pincode=pincode)
+            if cam_html:
+                soup = BeautifulSoup(cam_html, "html.parser")
+                parsed = parse_myntra_soup(soup, cam_html, clean_target, pincode=pincode)
+                if parsed:
+                    return parsed
+
+        return None
+    except Exception as e:
+        logger.error(f"Error scraping Myntra: {e}")
+        return None
+
+
+# =====================================================================
+# 8. Nykaa Scraper
+# =====================================================================
+
+def extract_nykaa_id(url: str) -> str:
+    """Extract product ID / SKU from Nykaa URL."""
+    m = re.search(r"/p/(\d+)", url)
+    return m.group(1) if m else "NYKAA_ITEM"
+
+
+def parse_nykaa_soup(soup: BeautifulSoup, raw_html: str, url: str, pincode: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Parse product title, price, currency, image, and item ID from Nykaa HTML."""
+    title, price, item_id, img_url = None, None, None, None
+    in_stock = True
+
+    # 1. Check window.__PRELOADED_STATE__
+    idx = raw_html.find("window.__PRELOADED_STATE__")
+    if idx != -1:
+        brace_start = raw_html.find("{", idx)
+        depth = 0
+        ny_str = None
+        for i in range(brace_start, len(raw_html)):
+            if raw_html[i] == "{":
+                depth += 1
+            elif raw_html[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    ny_str = raw_html[brace_start:i+1]
+                    break
+        if ny_str:
+            try:
+                d = json.loads(ny_str)
+                prod = d.get("productPage", {}).get("product", {})
+                title = prod.get("title") or prod.get("name")
+                val = prod.get("finalPrice") or prod.get("offerPrice") or prod.get("discountedPrice") or prod.get("mrp")
+                if val:
+                    price = float(val)
+                item_id = str(prod.get("id") or prod.get("sku") or "")
+                img_url = prod.get("imageUrl")
+                if "inStock" in prod:
+                    in_stock = bool(prod.get("inStock"))
+            except Exception:
+                pass
+
+    # 2. JSON-LD Fallback
+    if not title or price is None:
+        for s in soup.find_all("script", type="application/ld+json"):
+            try:
+                ld = json.loads(s.string)
+                if isinstance(ld, dict) and ld.get("@type") == "Product":
+                    if not title:
+                        title = ld.get("name")
+                    if not img_url:
+                        img = ld.get("image")
+                        img_url = img[0] if isinstance(img, list) else img
+                    if price is None and "offers" in ld:
+                        offers = ld.get("offers", {})
+                        if isinstance(offers, dict) and offers.get("price"):
+                            price = float(offers["price"])
+                        if "availability" in offers:
+                            in_stock = "outofstock" not in str(offers.get("availability")).lower()
+            except Exception:
+                pass
+
+    # Fallbacks from DOM
+    if not item_id:
+        item_id = extract_nykaa_id(url)
+    if not title:
+        h1 = soup.select_one("h1")
+        if h1:
+            title = h1.get_text(strip=True)
+    if not img_url:
+        og_img = soup.find("meta", property="og:image")
+        if og_img and og_img.get("content"):
+            img_url = og_img.get("content")
+
+    if "out of stock" in raw_html.lower() or "sold out" in raw_html.lower():
+        in_stock = False
+
+    if not in_stock and price is None:
+        price = 0.0
+
+    if not title or price is None:
+        return None
+
+    return {
+        "platform": "Nykaa",
+        "platform_badge": "🌸 Nykaa",
+        "item_id": item_id,
+        "title": title,
+        "price": round(price, 2) if price else 0.0,
+        "currency": "₹",
+        "url": url,
+        "image_url": img_url,
+        "pincode": str(pincode or "110001"),
+        "in_stock": in_stock,
+    }
+
+
+def fetch_nykaa_product(url: str, pincode: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Fetch live product details from Nykaa with pincode support."""
+    clean_target = clean_url_from_text(url)
+    try:
+        hdrs = get_headers_for_pincode(pincode)
+        res = requests.get(clean_target, impersonate="chrome124", headers=hdrs, allow_redirects=True, timeout=20)
+        if res.status_code == 200:
+            soup = BeautifulSoup(res.text, "html.parser")
+            parsed = parse_nykaa_soup(soup, res.text, res.url, pincode=pincode)
+            if parsed:
+                return parsed
+
+        # Secondary Camoufox fallback
+        if CAMOUFOX_AVAILABLE:
+            logger.info(f"curl_cffi failed on Nykaa. Escalating to Camoufox stealth browser...")
+            cam_html = fetch_page_with_camoufox(clean_target, pincode=pincode)
+            if cam_html:
+                soup = BeautifulSoup(cam_html, "html.parser")
+                parsed = parse_nykaa_soup(soup, cam_html, clean_target, pincode=pincode)
+                if parsed:
+                    return parsed
+
+        return None
+    except Exception as e:
+        logger.error(f"Error scraping Nykaa: {e}")
+        return None
+
+
+# =====================================================================
+# 9. Tira Beauty Scraper
+# =====================================================================
+
+def extract_tira_id(url: str) -> str:
+    """Extract product ID / slug from Tira URL."""
+    m = re.search(r"-(\d+)(?:[/?]|$)", url) or re.search(r"/product/([a-zA-Z0-9_-]+)", url)
+    return m.group(1) if m else "TIRA_ITEM"
+
+
+def parse_tira_soup(soup: BeautifulSoup, raw_html: str, url: str, pincode: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Parse product title, price, currency, image, and item ID from Tira HTML."""
+    title, price, item_id, img_url = None, None, None, None
+    in_stock = True
+
+    # 1. Check JSON-LD Product Schema
+    for s in soup.find_all("script", type="application/ld+json"):
+        try:
+            ld = json.loads(s.string)
+            if isinstance(ld, dict) and ld.get("@type") == "Product":
+                if not title:
+                    title = ld.get("name")
+                if not item_id:
+                    item_id = str(ld.get("productID") or ld.get("sku") or "")
+                offers = ld.get("offers", {})
+                if isinstance(offers, dict):
+                    if offers.get("price"):
+                        price = float(offers["price"])
+                    if "availability" in offers:
+                        in_stock = "outofstock" not in str(offers.get("availability")).lower()
+                img = ld.get("image")
+                if img and not img_url:
+                    img_url = img[0] if isinstance(img, list) else img
+        except Exception:
+            pass
+
+    # 2. Check window.APP_DATA (Reliance Retail Redux state)
+    idx = raw_html.find("window.APP_DATA")
+    if idx != -1:
+        brace_start = raw_html.find("{", idx)
+        depth = 0
+        tira_str = None
+        for i in range(brace_start, len(raw_html)):
+            if raw_html[i] == "{":
+                depth += 1
+            elif raw_html[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    tira_str = raw_html[brace_start:i+1]
+                    break
+        if tira_str:
+            try:
+                cleaned = re.sub(r':\s*undefined\b', ':null', tira_str)
+                d = json.loads(cleaned)
+                pd = d.get("reduxData", {}).get("catalog", {}).get("product_details", {})
+                if not title and pd.get("name"):
+                    title = pd.get("name")
+                if not item_id and pd.get("item_code"):
+                    item_id = str(pd.get("item_code"))
+                if not img_url and pd.get("medias"):
+                    img_url = pd["medias"][0].get("url")
+            except Exception:
+                pass
+
+    if price is None:
+        sp_match = re.search(r'"(?:selling_price|final_price|price-effective|effective)"\s*:\s*"*(\d+(?:\.\d+)?)"*', raw_html)
+        if sp_match:
+            price = float(sp_match.group(1))
+
+    if not item_id:
+        item_id = extract_tira_id(url)
+
+    if not title:
+        h1 = soup.select_one("h1")
+        if h1:
+            title = h1.get_text(strip=True)
+
+    if not img_url:
+        og_img = soup.find("meta", property="og:image")
+        if og_img and og_img.get("content"):
+            img_url = og_img.get("content")
+
+    if "out of stock" in raw_html.lower() or "outofstock" in raw_html.lower() or "sold out" in raw_html.lower():
+        in_stock = False
+
+    if not in_stock and price is None:
+        price = 0.0
+
+    if not title or price is None:
+        return None
+
+    return {
+        "platform": "Tira",
+        "platform_badge": "✨ Tira",
+        "item_id": item_id,
+        "title": title,
+        "price": round(price, 2) if price else 0.0,
+        "currency": "₹",
+        "url": url,
+        "image_url": img_url,
+        "pincode": str(pincode or "110001"),
+        "in_stock": in_stock,
+    }
+
+
+def fetch_tira_product(url: str, pincode: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Fetch live product details from Tira Beauty with pincode support."""
+    clean_target = clean_url_from_text(url)
+    try:
+        hdrs = get_headers_for_pincode(pincode)
+        res = requests.get(clean_target, impersonate="chrome124", headers=hdrs, allow_redirects=True, timeout=20)
+        if res.status_code == 200:
+            soup = BeautifulSoup(res.text, "html.parser")
+            parsed = parse_tira_soup(soup, res.text, res.url, pincode=pincode)
+            if parsed:
+                return parsed
+
+        # Secondary Camoufox fallback
+        if CAMOUFOX_AVAILABLE:
+            logger.info(f"curl_cffi failed on Tira. Escalating to Camoufox stealth browser...")
+            cam_html = fetch_page_with_camoufox(clean_target, pincode=pincode)
+            if cam_html:
+                soup = BeautifulSoup(cam_html, "html.parser")
+                parsed = parse_tira_soup(soup, cam_html, clean_target, pincode=pincode)
+                if parsed:
+                    return parsed
+
+        return None
+    except Exception as e:
+        logger.error(f"Error scraping Tira: {e}")
+        return None
+
+
+# =====================================================================
+# 10. Meesho Scraper
+# =====================================================================
+
+def extract_meesho_id(url: str) -> str:
+    """Extract unique product identifier from Meesho URL."""
+    m = re.search(r"/p/([a-zA-Z0-9]+)", url)
+    return m.group(1) if m else "MEESHO_ITEM"
+
+
+def fetch_meesho_product(url: str, pincode: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Fetch product details from Meesho with search index resolution for Akamai bypass."""
+    import urllib.parse
+    clean_target = clean_url_from_text(url)
+    item_id = extract_meesho_id(clean_target)
+
+    # Extract title from URL slug if available
+    m_slug = re.search(r"meesho\.com/([^/]+)/p/", clean_target)
+    title = None
+    if m_slug:
+        raw_slug = m_slug.group(1).replace("-", " ").strip()
+        title = raw_slug.title()
+
+    price = None
+    img_url = None
+    in_stock = True
+
+    # 1. Primary: Direct fetch with realistic mobile browser impersonation
+    try:
+        hdrs = get_headers_for_pincode(pincode)
+        res = requests.get(clean_target, impersonate="chrome124", headers=hdrs, allow_redirects=True, timeout=12)
+        if res.status_code == 200 and "Access Denied" not in res.text:
+            soup = BeautifulSoup(res.text, "html.parser")
+            h1 = soup.select_one("h1")
+            if h1 and h1.get_text(strip=True):
+                title = h1.get_text(strip=True)
+            p_elem = soup.select_one("h4") or soup.select_one("h5")
+            if p_elem and "₹" in p_elem.get_text():
+                m_p = re.search(r"₹\s*([\d,]+)", p_elem.get_text())
+                if m_p:
+                    price = float(m_p.group(1).replace(",", ""))
+            og_img = soup.find("meta", property="og:image")
+            if og_img and og_img.get("content"):
+                img_url = og_img.get("content")
+            if "out of stock" in res.text.lower() or "sold out" in res.text.lower():
+                in_stock = False
+    except Exception as e:
+        logger.debug(f"Direct Meesho fetch failed: {e}")
+
+    # 2. Secondary: Search Engine Cache Fallback (extracts title & live price when Akamai restricts cloud datacenter IPs)
+    if price is None and m_slug:
+        try:
+            q = f"site:meesho.com/p/ {m_slug.group(1).replace('-', ' ')}"
+            ddg_url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote(q)}"
+            r_ddg = requests.get(ddg_url, impersonate="chrome124", timeout=10)
+            if r_ddg.status_code == 200:
+                soup = BeautifulSoup(r_ddg.text, "html.parser")
+                for res in soup.select(".result"):
+                    txt = res.get_text(separator=" ")
+                    m_p = re.findall(r"₹\s*([\d,]+)", txt)
+                    if m_p:
+                        for cand in m_p:
+                            v = float(cand.replace(",", ""))
+                            if 10 < v < 100000:
+                                price = v
+                                break
+                    if price:
+                        t_elem = res.select_one(".result__title")
+                        if t_elem:
+                            raw_t = t_elem.get_text(strip=True).replace(" - Meesho", "")
+                            if len(raw_t) > 5 and "Online Shopping" not in raw_t:
+                                title = raw_t
+                        break
+        except Exception as e:
+            logger.debug(f"Meesho search index fallback failed: {e}")
+
+    if not title:
+        title = f"Meesho Product #{item_id}"
+
+    return {
+        "platform": "Meesho",
+        "platform_badge": "🛍️ Meesho",
+        "item_id": item_id,
+        "title": title,
+        "price": round(price, 2) if price else 0.0,
+        "currency": "₹",
+        "url": clean_target,
+        "image_url": img_url,
+        "pincode": str(pincode or "110001"),
+        "in_stock": in_stock,
+    }
+
+
+# =====================================================================
 # Unified Fetcher
 # =====================================================================
 
@@ -1098,11 +1605,23 @@ def fetch_product(url_or_text: str, pincode: Optional[str] = None) -> Optional[D
         return fetch_flipkart_product(clean_target, pincode=pincode)
     elif platform == "Amazon":
         return fetch_amazon_product(clean_target, pincode=pincode)
+    elif platform == "Myntra":
+        return fetch_myntra_product(clean_target, pincode=pincode)
+    elif platform == "Nykaa":
+        return fetch_nykaa_product(clean_target, pincode=pincode)
+    elif platform == "Tira":
+        return fetch_tira_product(clean_target, pincode=pincode)
+    elif platform == "Meesho":
+        return fetch_meesho_product(clean_target, pincode=pincode)
     else:
         # Fallback cascade across supported platforms
         for fetcher in [
             fetch_amazon_product,
             fetch_flipkart_product,
+            fetch_myntra_product,
+            fetch_nykaa_product,
+            fetch_tira_product,
+            fetch_meesho_product,
             fetch_jiomart_product,
             fetch_reliancedigital_product,
             fetch_croma_product,
