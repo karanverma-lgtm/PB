@@ -83,15 +83,16 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     text = (
         f"👋 <b>Welcome to Price Drop Alert Bot, {name}!</b>\n\n"
-        "🛍️ Never miss a deal! Send me any product link from <b>10 major platforms</b>, set your desired target price, "
+        "🛍️ Never miss a deal! Send me any product link from <b>11 major platforms</b>, set your desired target price, "
         "and I will notify you the moment the price drops or when out-of-stock items restock!\n\n"
         "⚡ <b>Supported Platforms:</b>\n"
         "• 📦 <b>Amazon India & Global</b> (<code>amazon.in</code>, <code>amzn.to</code>)\n"
         "• 🛍️ <b>Flipkart</b> (<code>flipkart.com</code>, <code>dl.flipkart.com</code>)\n"
         "• 🔴 <b>Myntra</b> (<code>myntra.com</code>)\n"
-        "• 🌸 <b>Nykaa</b> (<code>nykaa.com</code>)\n"
+        "• 🌸 <b>Nykaa & Nykaa Fashion</b> (<code>nykaa.com</code>, <code>nykaafashion.com</code>)\n"
         "• ✨ <b>Tira Beauty</b> (<code>tirabeauty.com</code>)\n"
         "• 🛍️ <b>Meesho</b> (<code>meesho.com</code>)\n"
+        "• 👗 <b>Savana</b> (<code>savana.com</code>, <code>sharein.savana.com</code>)\n"
         "• 🟢 <b>JioMart</b> (<code>jiomart.com</code>)\n"
         "• 🔴 <b>Reliance Digital</b> (<code>reliancedigital.in</code>)\n"
         "• ⚪ <b>Croma</b> (<code>croma.com</code>)\n"
@@ -398,6 +399,7 @@ async def list_products_command(update: Update, context: ContextTypes.DEFAULT_TY
         "Nykaa": "🌸",
         "Tira": "✨",
         "Meesho": "🛍️",
+        "Savana": "👗",
     }
 
     chunks = []
@@ -1041,7 +1043,7 @@ def main() -> None:
     print("\n" + "=" * 65)
     print("🛍️ Multi-Platform Price Drop Bot (@Stockmightybot) Live!")
     print("=" * 65)
-    print("Monitoring 10 Platforms: Amazon, Flipkart, Myntra, Nykaa, Tira, Meesho, JioMart, Reliance Digital, Croma & Samsung...\n")
+    print("Monitoring 11 Platforms: Amazon, Flipkart, Myntra, Nykaa, Tira, Meesho, Savana, JioMart, Reliance Digital, Croma & Samsung...\n")
 
     app.run_polling(drop_pending_updates=True)
 

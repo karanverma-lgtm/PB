@@ -117,7 +117,7 @@ def clean_url_from_text(raw_text: str) -> str:
 
 
 def detect_platform(url_or_text: str) -> str:
-    """Detect whether a link is from Amazon, Flipkart, JioMart, Reliance Digital, Croma, Samsung, Myntra, Nykaa, Tira, or Meesho."""
+    """Detect whether a link is from Amazon, Flipkart, JioMart, Reliance Digital, Croma, Samsung, Myntra, Nykaa, Tira, Meesho, or Savana."""
     text = url_or_text.lower().strip()
     if "reliancedigital.in" in text:
         return "RelianceDigital"
@@ -131,12 +131,14 @@ def detect_platform(url_or_text: str) -> str:
         return "Flipkart"
     if "myntra.com" in text:
         return "Myntra"
-    if "nykaa.com" in text:
+    if "nykaa.com" in text or "nykaafashion.com" in text:
         return "Nykaa"
     if "tirabeauty.com" in text or "tira." in text:
         return "Tira"
     if "meesho.com" in text:
         return "Meesho"
+    if "savana.com" in text or "sharein.savana.com" in text:
+        return "Savana"
     if "amazon." in text or "amzn." in text or re.match(r"^[A-Z0-9]{10}$", url_or_text.strip()):
         return "Amazon"
     return "Unknown"
@@ -1507,8 +1509,8 @@ def fetch_meesho_product(url: str, pincode: Optional[str] = None) -> Optional[Di
     clean_target = clean_url_from_text(url)
     item_id = extract_meesho_id(clean_target)
 
-    # Extract title from URL slug if available
-    m_slug = re.search(r"meesho\.com/([^/]+)/p/", clean_target)
+    # Extract title from URL slug if available (excluding /s/ shortlink prefix)
+    m_slug = re.search(r"meesho\.com/(?!s/)([^/?]+)/p/", clean_target)
     title = None
     if m_slug:
         raw_slug = m_slug.group(1).replace("-", " ").strip()
@@ -1567,7 +1569,7 @@ def fetch_meesho_product(url: str, pincode: Optional[str] = None) -> Optional[Di
         except Exception as e:
             logger.debug(f"Meesho search index fallback failed: {e}")
 
-    if not title:
+    if not title or title.strip() in ["S", "P", ""]:
         title = f"Meesho Product #{item_id}"
 
     return {
@@ -1576,6 +1578,121 @@ def fetch_meesho_product(url: str, pincode: Optional[str] = None) -> Optional[Di
         "item_id": item_id,
         "title": title,
         "price": round(price, 2) if price else 0.0,
+        "currency": "₹",
+        "url": clean_target,
+        "image_url": img_url,
+        "pincode": str(pincode or "110001"),
+        "in_stock": in_stock,
+    }
+
+
+# =====================================================================
+# 11. Savana Scraper
+# =====================================================================
+
+def extract_savana_id(url: str) -> str:
+    """Extract goods ID from Savana URL."""
+    m = re.search(r"details/(\d+)", url)
+    return m.group(1) if m else "SAVANA_ITEM"
+
+
+def parse_savana_pre_data(raw_html: str) -> Optional[Dict[str, Any]]:
+    """Extract and parse window.$preData embedded JSON in Savana HTML."""
+    try:
+        m = re.search(r'window\.\$preData\s*=\s*(\{.+?\});', raw_html)
+        if m:
+            d = json.loads(m.group(1))
+            detail = d.get('/n/api/intention/item/v4/detail') or d.get('/n/api/trade/intention/item/detail')
+            if detail and isinstance(detail, dict):
+                return detail
+    except Exception as e:
+        logger.debug(f"Savana preData extraction error: {e}")
+    return None
+
+
+def fetch_savana_product(url: str, pincode: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Fetch live product details from Savana (savana.com / sharein.savana.com)."""
+    clean_target = clean_url_from_text(url)
+    item_id = extract_savana_id(clean_target)
+
+    # Resolve direct web canonical details URL
+    canonical_url = f"https://in.savana.com/details/{item_id}?ub_cl=in_en-IN" if item_id != "SAVANA_ITEM" else clean_target
+
+    title = None
+    price = None
+    img_url = None
+    in_stock = True
+
+    # 1. Primary: Direct fetch from in.savana.com or share link with realistic browser impersonation
+    for target in [canonical_url, clean_target]:
+        try:
+            hdrs = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9",
+            }
+            res = requests.get(target, impersonate="chrome124", headers=hdrs, allow_redirects=True, timeout=15)
+            if res.status_code == 200:
+                detail = parse_savana_pre_data(res.text)
+                if detail:
+                    title = detail.get("goodsName") or detail.get("shortGoodsName")
+                    p_val = detail.get("promotePrice") or detail.get("salesPrice")
+                    if p_val:
+                        price = float(p_val)
+                    imgs = detail.get("images", [])
+                    if imgs and isinstance(imgs, list):
+                        img_url = imgs[0].get("originalPic") or imgs[0].get("picThumb")
+                    btn_name = str(detail.get("defaultButtonName") or "").upper()
+                    if btn_name in ["SOLD OUT", "OUT OF STOCK"]:
+                        in_stock = False
+                    break
+
+                # Fallback: Parse OpenGraph / HTML metadata (common on sharein.savana.com)
+                soup = BeautifulSoup(res.text, "html.parser")
+                og_t = soup.find("meta", property="og:title")
+                if og_t and og_t.get("content"):
+                    title = og_t.get("content")
+                elif soup.title and soup.title.string:
+                    title = soup.title.string.split("|")[0].strip()
+
+                og_i = soup.find("meta", property="og:image")
+                if og_i and og_i.get("content"):
+                    img_url = og_i.get("content")
+
+                if price is not None and title:
+                    break
+        except Exception as e:
+            logger.debug(f"Savana fetch error on {target}: {e}")
+
+    # 2. Camoufox fallback if price was not extracted
+    if (price is None or not title) and CAMOUFOX_AVAILABLE:
+        try:
+            cam_html = fetch_page_with_camoufox(canonical_url, pincode=pincode)
+            if cam_html:
+                detail = parse_savana_pre_data(cam_html)
+                if detail:
+                    title = detail.get("goodsName") or detail.get("shortGoodsName")
+                    p_val = detail.get("promotePrice") or detail.get("salesPrice")
+                    if p_val:
+                        price = float(p_val)
+                    imgs = detail.get("images", [])
+                    if imgs and isinstance(imgs, list):
+                        img_url = imgs[0].get("originalPic") or imgs[0].get("picThumb")
+        except Exception as e:
+            logger.debug(f"Savana Camoufox fallback error: {e}")
+
+    if not title:
+        title = f"Savana Product #{item_id}"
+
+    if price is None:
+        price = 0.0
+
+    return {
+        "platform": "Savana",
+        "platform_badge": "👗 Savana",
+        "item_id": item_id,
+        "title": title,
+        "price": round(price, 2),
         "currency": "₹",
         "url": clean_target,
         "image_url": img_url,
@@ -1613,6 +1730,8 @@ def fetch_product(url_or_text: str, pincode: Optional[str] = None) -> Optional[D
         return fetch_tira_product(clean_target, pincode=pincode)
     elif platform == "Meesho":
         return fetch_meesho_product(clean_target, pincode=pincode)
+    elif platform == "Savana":
+        return fetch_savana_product(clean_target, pincode=pincode)
     else:
         # Fallback cascade across supported platforms
         for fetcher in [
@@ -1621,6 +1740,7 @@ def fetch_product(url_or_text: str, pincode: Optional[str] = None) -> Optional[D
             fetch_myntra_product,
             fetch_nykaa_product,
             fetch_tira_product,
+            fetch_savana_product,
             fetch_meesho_product,
             fetch_jiomart_product,
             fetch_reliancedigital_product,

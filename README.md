@@ -1,18 +1,19 @@
 # Multi-Platform Price Drop Tracker Bot 🛍️📉
 
-A full-featured Telegram bot that tracks product prices across **10 major e-commerce platforms** in real time and automatically delivers an instant Telegram notification whenever an item drops to or below your desired target price or when out-of-stock items restock.
+A full-featured Telegram bot that tracks product prices across **11 major e-commerce platforms** in real time and automatically delivers an instant Telegram notification whenever an item drops to or below your desired target price or when out-of-stock items restock.
 
 ---
 
 ## 🌟 Key Features
 
-1. **🛍️ 10 Supported Platforms**
+1. **🛍️ 11 Supported Platforms**
    - **Amazon India & Global** (`amazon.in`, `amazon.com`, `amzn.in/d/...`, `amzn.to/...`)
    - **Flipkart** (`flipkart.com`, `dl.flipkart.com/s/...`)
    - **Myntra** (`myntra.com`)
-   - **Nykaa** (`nykaa.com`)
+   - **Nykaa & Nykaa Fashion** (`nykaa.com`, `nykaafashion.com`)
    - **Tira Beauty** (`tirabeauty.com`)
    - **Meesho** (`meesho.com`)
+   - **Savana** (`savana.com`, `sharein.savana.com`)
    - **JioMart** (`jiomart.com`)
    - **Reliance Digital** (`reliancedigital.in`)
    - **Croma** (`croma.com`)
