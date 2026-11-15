@@ -267,11 +267,12 @@ async def track_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
         return
 
-    curr_price = product["price"]
-    currency = product["currency"]
+    curr_price = product.get("price") or 0.0
+    currency = product.get("currency", "₹")
     platform = product["platform"]
+    in_stock = product.get("in_stock", True)
 
-    if target_price >= curr_price:
+    if in_stock and curr_price > 0 and target_price >= curr_price:
         await loading_msg.edit_text(
             f"⚠️ Target price ({currency}{target_price:,.2f}) is already higher than or equal to the "
             f"current price ({currency}{curr_price:,.2f}).\n"
@@ -279,8 +280,8 @@ async def track_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
         return
 
-    savings = curr_price - target_price
-    savings_pct = (savings / curr_price) * 100
+    savings = (curr_price - target_price) if (in_stock and curr_price > target_price) else 0.0
+    savings_pct = (savings / curr_price * 100) if (curr_price > 0 and savings > 0) else 0.0
 
     # Save to database
     product_id = database.add_tracked_product(
@@ -295,23 +296,37 @@ async def track_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         current_price=curr_price,
         currency=currency,
         pincode=user_pin,
+        is_in_stock=in_stock,
     )
 
     title_escaped = html.escape(product["title"][:75])
     badge_escaped = html.escape(product.get("platform_badge", platform))
 
-    caption = (
-        f"✅ <b>Product Successfully Tracked!</b> (ID: <code>#{product_id}</code>)\n"
-        f"━━━━━━━━━━━━━━━━━━━\n"
-        f"🏷️ <b>Platform:</b> <code>{badge_escaped}</code>\n"
-        f"📦 <b>{title_escaped}...</b>\n\n"
-        f"💰 <b>Current Price:</b> <code>{currency}{curr_price:,.2f}</code>\n"
-        f"🎯 <b>Target Price:</b> <code>{currency}{target_price:,.2f}</code>\n"
-        f"📉 <b>Target Savings:</b> <code>{currency}{savings:,.2f} ({savings_pct:.1f}% OFF)</code>\n"
-        f"📍 <b>Delivery PIN:</b> <code>{user_pin}</code>\n"
-        f"━━━━━━━━━━━━━━━━━━━\n"
-        f"🔔 I am actively monitoring this item and will alert you the moment the price drops!"
-    )
+    if not in_stock:
+        caption = (
+            f"🔔 <b>Out-of-Stock Item Tracked!</b> (ID: <code>#{product_id}</code>)\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"🏷️ <b>Platform:</b> <code>{badge_escaped}</code>\n"
+            f"📦 <b>{title_escaped}...</b>\n\n"
+            f"❌ <b>Stock Status:</b> <code>Currently Out of Stock</code>\n"
+            f"🎯 <b>Target Price:</b> <code>{currency}{target_price:,.2f}</code>\n"
+            f"📍 <b>Delivery PIN:</b> <code>{user_pin}</code>\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"🔔 I am actively monitoring restocks and will alert you the moment this item is Back in Stock!"
+        )
+    else:
+        caption = (
+            f"✅ <b>Product Successfully Tracked!</b> (ID: <code>#{product_id}</code>)\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"🏷️ <b>Platform:</b> <code>{badge_escaped}</code>\n"
+            f"📦 <b>{title_escaped}...</b>\n\n"
+            f"💰 <b>Current Price:</b> <code>{currency}{curr_price:,.2f}</code>\n"
+            f"🎯 <b>Target Price:</b> <code>{currency}{target_price:,.2f}</code>\n"
+            f"📉 <b>Target Savings:</b> <code>{currency}{savings:,.2f} ({savings_pct:.1f}% OFF)</code>\n"
+            f"📍 <b>Delivery PIN:</b> <code>{user_pin}</code>\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"🔔 I am actively monitoring this item and will alert you the moment the price drops!"
+        )
 
     keyboard = [
         [
@@ -378,19 +393,27 @@ async def list_products_command(update: Update, context: ContextTypes.DEFAULT_TY
     current_keyboard = []
 
     for p in products:
-        savings = p["current_price"] - p["target_price"]
-        curr_str = f"{p['currency']}{p['current_price']:,.2f}"
-        target_str = f"{p['currency']}{p['target_price']:,.2f}"
         platform_icon = icons.get(p.get("platform"), "🏷️")
         p_title = html.escape(p["title"][:38])
         safe_url = html.escape(p["url"])
-
         p_pin = p.get("pincode") or "110001"
-        entry = (
-            f"• <b>ID <code>#{p['id']}</code>:</b> {platform_icon} <a href=\"{safe_url}\">{p_title}...</a>\n"
-            f"  💰 Current: <code>{curr_str}</code> ➔ Target: <code>{target_str}</code> (📍 <code>{p_pin}</code>)\n"
-            f"  <i>Needs {p['currency']}{savings:,.2f} drop</i>\n\n"
-        )
+        is_stock = p.get("is_in_stock", 1)
+
+        if not is_stock:
+            stock_badge = "❌ <b>Out of Stock</b> (Monitoring Restock 🔔)"
+            entry = (
+                f"• <b>ID <code>#{p['id']}</code>:</b> {platform_icon} <a href=\"{safe_url}\">{p_title}...</a>\n"
+                f"  {stock_badge} (📍 <code>{p_pin}</code>)\n\n"
+            )
+        else:
+            savings = p["current_price"] - p["target_price"]
+            curr_str = f"{p['currency']}{p['current_price']:,.2f}"
+            target_str = f"{p['currency']}{p['target_price']:,.2f}"
+            entry = (
+                f"• <b>ID <code>#{p['id']}</code>:</b> {platform_icon} <a href=\"{safe_url}\">{p_title}...</a>\n"
+                f"  💰 Current: <code>{curr_str}</code> ➔ Target: <code>{target_str}</code> (📍 <code>{p_pin}</code>)\n"
+                f"  <i>Needs {p['currency']}{savings:,.2f} drop</i>\n\n"
+            )
         buttons = [
             InlineKeyboardButton(f"🛒 #{p['id']} View", url=p["url"]),
             InlineKeyboardButton(f"❌ Stop #{p['id']}", callback_data=f"del_{p['id']}"),
@@ -480,38 +503,56 @@ async def handle_url_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
     # Persist pending product in SQLite database so button clicks survive bot restarts!
     database.save_pending_product(product)
 
-    curr_price = product["price"]
-    currency = product["currency"]
-
-    p5 = round(curr_price * 0.95, 2)
-    p10 = round(curr_price * 0.90, 2)
-    p15 = round(curr_price * 0.85, 2)
+    in_stock = product.get("in_stock", True)
+    curr_price = product.get("price") or 0.0
+    currency = product.get("currency", "₹")
 
     title_escaped = html.escape(product["title"][:75])
     badge_escaped = html.escape(product.get("platform_badge", platform))
-
-    caption = (
-        f"{badge_escaped} <b>{title_escaped}...</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━\n"
-        f"💰 <b>Current Price:</b> <code>{currency}{curr_price:,.2f}</code>\n"
-        f"📍 <b>Delivery PIN:</b> <code>{user_pin}</code> (Change with <code>/pincode</code>)\n\n"
-        f"🎯 <b>Select your desired price drop below:</b> or reply with <code>/track {product['url']} &lt;price&gt;</code>"
-    )
 
     # Store in memory for instant access
     cache_key = f"prod_{product['item_id']}"
     context.user_data[cache_key] = product
 
-    keyboard = [
-        [
-            InlineKeyboardButton(f"🔔 5% Drop ({currency}{p5:,.0f})", callback_data=f"set_{product['item_id']}_{p5}"),
-            InlineKeyboardButton(f"🔔 10% Drop ({currency}{p10:,.0f})", callback_data=f"set_{product['item_id']}_{p10}"),
-        ],
-        [
-            InlineKeyboardButton(f"🔥 15% Drop ({currency}{p15:,.0f})", callback_data=f"set_{product['item_id']}_{p15}"),
-            InlineKeyboardButton(f"🛒 View on {product['platform']}", url=product["url"]),
+    if not in_stock:
+        caption = (
+            f"{badge_escaped} <b>{title_escaped}...</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"❌ <b>Stock Status:</b> <code>Currently Out of Stock</code>\n"
+            f"📍 <b>Delivery PIN:</b> <code>{user_pin}</code> (Change with <code>/pincode</code>)\n\n"
+            f"🔔 This item is currently unavailable. Click below to get an instant <b>Back-in-Stock Restock Alert</b> the moment it's available, or track a target price with <code>/track {product['url']} &lt;price&gt;</code>."
+        )
+        keyboard = [
+            [
+                InlineKeyboardButton("🔔 Notify when Back in Stock", callback_data=f"restock_{product['item_id']}"),
+            ],
+            [
+                InlineKeyboardButton(f"🛒 View on {product['platform']}", url=product["url"]),
+            ]
         ]
-    ]
+    else:
+        p5 = round(curr_price * 0.95, 2)
+        p10 = round(curr_price * 0.90, 2)
+        p15 = round(curr_price * 0.85, 2)
+
+        caption = (
+            f"{badge_escaped} <b>{title_escaped}...</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"💰 <b>Current Price:</b> <code>{currency}{curr_price:,.2f}</code>\n"
+            f"📍 <b>Delivery PIN:</b> <code>{user_pin}</code> (Change with <code>/pincode</code>)\n\n"
+            f"🎯 <b>Select your desired price drop below:</b> or reply with <code>/track {product['url']} &lt;price&gt;</code>"
+        )
+        keyboard = [
+            [
+                InlineKeyboardButton(f"🔔 5% Drop ({currency}{p5:,.0f})", callback_data=f"set_{product['item_id']}_{p5}"),
+                InlineKeyboardButton(f"🔔 10% Drop ({currency}{p10:,.0f})", callback_data=f"set_{product['item_id']}_{p10}"),
+            ],
+            [
+                InlineKeyboardButton(f"🔥 15% Drop ({currency}{p15:,.0f})", callback_data=f"set_{product['item_id']}_{p15}"),
+                InlineKeyboardButton(f"🛒 View on {product['platform']}", url=product["url"]),
+            ]
+        ]
+
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     try:
@@ -544,7 +585,66 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     await query.answer()
     data = query.data
 
-    if data.startswith("set_"):
+    if data.startswith("restock_"):
+        item_id = data.split("_")[1]
+        product = context.user_data.get(f"prod_{item_id}") or database.get_pending_product(item_id)
+        if not product:
+            await query.message.reply_text("❌ Session expired. Please re-paste the product link.")
+            return
+
+        user_pin = database.get_user_pincode(query.from_user.id)
+        # Add to tracked products with ceiling price and is_in_stock=False
+        product_id = database.add_tracked_product(
+            user_id=query.from_user.id,
+            chat_id=query.message.chat_id,
+            platform=product["platform"],
+            item_id=product["item_id"],
+            title=product["title"],
+            url=product["url"],
+            image_url=product.get("image_url"),
+            target_price=999999999.0,
+            current_price=product.get("price") or 0.0,
+            currency=product.get("currency", "₹"),
+            pincode=user_pin,
+            is_in_stock=False,
+        )
+
+        title_escaped = html.escape(product["title"][:70])
+        badge_escaped = html.escape(product.get("platform_badge", product["platform"]))
+
+        confirm = (
+            f"🔔 <b>Back-in-Stock Alert Activated!</b> (ID: <code>#{product_id}</code>)\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"🏷️ <b>Platform:</b> <code>{badge_escaped}</code>\n"
+            f"📦 <b>{title_escaped}...</b>\n\n"
+            f"❌ <b>Current Status:</b> <code>Out of Stock</code>\n"
+            f"📍 <b>Delivery PIN:</b> <code>{user_pin}</code>\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"⚡ I will immediately notify you the moment this product is Back in Stock!"
+        )
+        keyboard = [
+            [
+                InlineKeyboardButton(f"🛒 View on {product['platform']}", url=product["url"]),
+                InlineKeyboardButton("❌ Stop Tracking", callback_data=f"del_{product_id}"),
+            ],
+            [
+                InlineKeyboardButton("📋 View All Products", callback_data="list_products"),
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        if query.message.photo:
+            try:
+                await query.edit_message_caption(safe_caption(confirm), parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+            except Exception:
+                await query.message.reply_text(confirm, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+        else:
+            try:
+                await query.edit_message_text(confirm, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+            except Exception:
+                await query.message.reply_text(confirm, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+
+    elif data.startswith("set_"):
         parts = data.split("_")
         item_id = parts[1]
         target_price = float(parts[2])
@@ -568,6 +668,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             current_price=product["price"],
             currency=product["currency"],
             pincode=user_pin,
+            is_in_stock=product.get("in_stock", True),
         )
 
         title_escaped = html.escape(product["title"][:70])
@@ -638,17 +739,80 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 # Background Job: Multi-Platform Price Drop Monitor
 # ---------------------------------------------------------
 
+async def send_alert_safely(
+    context: ContextTypes.DEFAULT_TYPE,
+    chat_id: int,
+    user_id: int,
+    text: str,
+    image_url: Optional[str],
+    reply_markup: InlineKeyboardMarkup,
+) -> bool:
+    """Send alert message/photo to chat handling Telegram flood control and blocked bot events."""
+    try:
+        if image_url:
+            await context.bot.send_photo(
+                chat_id=chat_id,
+                photo=image_url,
+                caption=safe_caption(text),
+                parse_mode=ParseMode.HTML,
+                reply_markup=reply_markup,
+            )
+        else:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=reply_markup,
+            )
+        return True
+    except RetryAfter as flood_err:
+        logger.warning(f"Telegram FloodControl: Waiting {flood_err.retry_after}s...")
+        await asyncio.sleep(flood_err.retry_after + 1.0)
+        try:
+            await context.bot.send_message(chat_id=chat_id, text=text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+            return True
+        except Forbidden:
+            logger.warning(f"Bot was blocked by chat {chat_id}. Deactivating alerts for user {user_id}.")
+            database.clear_user_products(user_id)
+            return False
+        except Exception:
+            return False
+    except Forbidden:
+        logger.warning(f"Bot was blocked by chat {chat_id}. Deactivating alerts for user {user_id}.")
+        database.clear_user_products(user_id)
+        return False
+    except Exception as e:
+        logger.debug(f"Photo dispatch failed ({e}), falling back to text: {e}")
+        try:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=reply_markup,
+            )
+            return True
+        except Forbidden:
+            logger.warning(f"Bot was blocked by chat {chat_id}. Deactivating alerts for user {user_id}.")
+            database.clear_user_products(user_id)
+            return False
+        except Exception as text_e:
+            logger.error(f"Failed to dispatch text update to chat {chat_id}: {text_e}")
+            return False
+
+
 async def check_prices_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     """
-    Background worker that polls active tracked products for price drops.
-    Dispatches notifications when current_price <= target_price.
-    Uses asyncio.to_thread and inter-request delays to protect the event loop.
+    Background worker that polls active tracked products for price drops and stock changes.
+    Dispatches notifications when:
+    1. An item transitions from In-Stock to Out-of-Stock
+    2. An item transitions from Out-of-Stock to Back-in-Stock (Restock)
+    3. current_price <= target_price (Price Drop)
     """
     products = database.get_all_active_products()
     if not products:
         return
 
-    logger.info(f"Checking prices for {len(products)} active tracked product(s)...")
+    logger.info(f"Checking prices & stock for {len(products)} active tracked product(s)...")
 
     # Group by (platform, item_id, pincode) to eliminate redundant network calls while respecting user pincodes
     prod_map: Dict[tuple, list] = {}
@@ -663,26 +827,102 @@ async def check_prices_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         try:
             # Run scraper in thread pool to prevent blocking asyncio event loop
             prod_data = await asyncio.to_thread(product_service.fetch_product, fetch_url, item_pin)
-            if not prod_data or not prod_data.get("price") or prod_data["price"] <= 0:
+            if not prod_data:
                 continue
 
-            new_price = prod_data["price"]
+            curr_stock = prod_data.get("in_stock", True)
+            new_price = prod_data.get("price") or 0.0
 
             for item, pin in items_with_pin:
                 product_id = item["id"]
                 target_price = item["target_price"]
                 chat_id = item["chat_id"]
+                user_id = item["user_id"]
                 currency = item["currency"]
                 title = prod_data["title"]
                 prod_url = prod_data["url"]
                 image_url = prod_data.get("image_url")
                 platform = prod_data["platform"]
                 badge = prod_data.get("platform_badge", platform)
-
-                database.update_product_price(product_id, new_price)
+                prev_stock = item.get("is_in_stock", 1)
 
                 title_escaped = html.escape(title[:75])
                 badge_escaped = html.escape(badge)
+
+                # ====================================================
+                # Case 1: In-Stock -> Out-of-Stock (OOS) Transition
+                # ====================================================
+                if prev_stock == 1 and curr_stock is False:
+                    database.update_product_stock_status(product_id, is_in_stock=False)
+                    logger.info(f"Stock Alert: #{product_id} on {platform} went OUT OF STOCK")
+
+                    oos_text = (
+                        f"⚠️🚨 <b>{badge_escaped} OUT OF STOCK ALERT!</b> 🚨⚠️\n"
+                        f"━━━━━━━━━━━━━━━━━━━\n"
+                        f"📦 <b>{title_escaped}...</b>\n\n"
+                        f"❌ This product has just gone <b>Out of Stock</b>!\n"
+                        f"📍 <b>Delivery PIN:</b> <code>{pin}</code>\n"
+                        f"━━━━━━━━━━━━━━━━━━━\n"
+                        f"🔔 <i>We are actively monitoring restocks and will immediately notify you the moment it is Back in Stock!</i>"
+                    )
+                    keyboard = [
+                        [InlineKeyboardButton(f"🛒 View on {platform}", url=prod_url)],
+                        [InlineKeyboardButton("🛑 Stop Tracking", callback_data=f"del_{product_id}")]
+                    ]
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+                    sent = await send_alert_safely(context, chat_id, user_id, oos_text, image_url, reply_markup)
+                    if not sent:
+                        break
+                    await asyncio.sleep(0.5)
+                    continue
+
+                # ====================================================
+                # Case 2: Out-of-Stock -> Back-in-Stock (Restock) Transition!
+                # ====================================================
+                elif prev_stock == 0 and curr_stock is True:
+                    database.update_product_stock_status(product_id, is_in_stock=True, current_price=new_price)
+                    logger.info(f"Restock Alert: #{product_id} on {platform} is BACK IN STOCK (Price: {new_price})")
+
+                    restock_text = (
+                        f"🟢🎉 <b>{badge_escaped} BACK IN STOCK ALERT!</b> 🎉🟢\n"
+                        f"━━━━━━━━━━━━━━━━━━━\n"
+                        f"📦 <b>{title_escaped}...</b>\n\n"
+                        f"✅ <b>Hooray! This item is now available to order!</b>\n"
+                        f"💰 <b>Live Price:</b> <code>{currency}{new_price:,.2f}</code>\n"
+                        f"🎯 <b>Your Target Price:</b> <code>{currency}{target_price:,.2f}</code>\n"
+                        f"📍 <b>Delivery PIN:</b> <code>{pin}</code>\n"
+                        f"━━━━━━━━━━━━━━━━━━━\n"
+                        f"⚡ Hurry! Grab it before it sells out again."
+                    )
+                    keyboard = [
+                        [InlineKeyboardButton(f"🛒 Buy Now on {platform}", url=prod_url)],
+                        [InlineKeyboardButton("🛑 Stop Tracking", callback_data=f"del_{product_id}")]
+                    ]
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+                    sent = await send_alert_safely(context, chat_id, user_id, restock_text, image_url, reply_markup)
+                    if not sent:
+                        break
+
+                    # If target reached as well, mark triggered
+                    if new_price > 0 and target_price < 999999000 and new_price <= target_price:
+                        database.mark_product_triggered(product_id, new_price)
+
+                    await asyncio.sleep(0.5)
+                    continue
+
+                # ====================================================
+                # Case 3: Still Out-of-Stock (prev_stock == 0 and curr_stock is False)
+                # ====================================================
+                elif curr_stock is False:
+                    continue
+
+                # ====================================================
+                # Case 4: Item In Stock - Normal Price Check
+                # ====================================================
+                if new_price <= 0:
+                    continue
+
+                database.update_product_price(product_id, new_price)
 
                 # Interactive buttons: Direct Link + One-Click Stop Tracking
                 keyboard = [
@@ -731,53 +971,9 @@ async def check_prices_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                         f"🕒 <i>Next automated check in 4 hours.</i>"
                     )
 
-                # Dispatch with Telegram Flood Control handling & graceful text fallback
-                try:
-                    if image_url:
-                        await context.bot.send_photo(
-                            chat_id=chat_id,
-                            photo=image_url,
-                            caption=safe_caption(update_text),
-                            parse_mode=ParseMode.HTML,
-                            reply_markup=reply_markup,
-                        )
-                    else:
-                        await context.bot.send_message(
-                            chat_id=chat_id,
-                            text=update_text,
-                            parse_mode=ParseMode.HTML,
-                            reply_markup=reply_markup,
-                        )
-                except RetryAfter as flood_err:
-                    logger.warning(f"Telegram FloodControl: Waiting {flood_err.retry_after}s...")
-                    await asyncio.sleep(flood_err.retry_after + 1.0)
-                    try:
-                        await context.bot.send_message(chat_id=chat_id, text=update_text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
-                    except Forbidden:
-                        logger.warning(f"Bot was blocked by chat {chat_id}. Deactivating alerts for user {item['user_id']}.")
-                        database.clear_user_products(item["user_id"])
-                        break
-                    except Exception:
-                        pass
-                except Forbidden:
-                    logger.warning(f"Bot was blocked by chat {chat_id}. Deactivating alerts for user {item['user_id']}.")
-                    database.clear_user_products(item["user_id"])
+                sent = await send_alert_safely(context, chat_id, user_id, update_text, image_url, reply_markup)
+                if not sent:
                     break
-                except Exception as e:
-                    logger.debug(f"Photo dispatch failed ({e}), falling back to text: {e}")
-                    try:
-                        await context.bot.send_message(
-                            chat_id=chat_id,
-                            text=update_text,
-                            parse_mode=ParseMode.HTML,
-                            reply_markup=reply_markup,
-                        )
-                    except Forbidden:
-                        logger.warning(f"Bot was blocked by chat {chat_id}. Deactivating alerts for user {item['user_id']}.")
-                        database.clear_user_products(item["user_id"])
-                        break
-                    except Exception as text_e:
-                        logger.error(f"Failed to dispatch text update to chat {chat_id}: {text_e}")
 
                 # Micro-pause between messages to the same chat to respect 1 msg/sec limit
                 await asyncio.sleep(0.5)

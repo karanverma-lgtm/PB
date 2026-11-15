@@ -315,6 +315,31 @@ def parse_amazon_soup(soup: BeautifulSoup, asin: str, canonical_url: str, pincod
                 if val > 0:
                     price = val
 
+    # Availability / Out-of-Stock Detection for Amazon
+    is_in_stock = True
+    avail_elem = soup.find("div", id="availability") or soup.find("div", id="outOfStock") or soup.find("div", id="availabilityInsideBuyBox_feature_div")
+    avail_text = avail_elem.get_text(separator=" ", strip=True).lower() if avail_elem else ""
+
+    oos_keywords = [
+        "currently unavailable",
+        "we don't know when or if this item will be back in stock",
+        "temporarily out of stock",
+        "out of stock",
+        "item is unavailable",
+    ]
+    if any(kw in avail_text for kw in oos_keywords):
+        is_in_stock = False
+    elif "schema.org/outofstock" in str(soup).lower():
+        is_in_stock = False
+
+    # If price was not found, check page text for out of stock signals
+    if price is None:
+        center_col = soup.find("div", id="centerCol") or soup.find("div", id="rightCol")
+        center_text = center_col.get_text(separator=" ", strip=True).lower() if center_col else ""
+        if any(kw in center_text for kw in oos_keywords) or "currently unavailable" in soup.get_text().lower():
+            is_in_stock = False
+            price = 0.0
+
     if price is None:
         return None
 
@@ -336,11 +361,12 @@ def parse_amazon_soup(soup: BeautifulSoup, asin: str, canonical_url: str, pincod
         "platform_badge": "📦 Amazon",
         "item_id": asin,
         "title": title,
-        "price": round(price, 2),
+        "price": round(price, 2) if price else 0.0,
         "currency": currency,
         "url": canonical_url,
         "image_url": img_url,
         "pincode": str(pincode or "110001"),
+        "in_stock": is_in_stock,
     }
 
 
@@ -552,6 +578,30 @@ def parse_flipkart_soup(soup: BeautifulSoup, url: str, pincode: Optional[str] = 
     if price is None and fallback_price and fallback_price > 10:
         price = fallback_price
 
+    # Flipkart Availability / Out-of-Stock Detection
+    is_in_stock = True
+    soup_str = str(soup)
+    page_text = soup.get_text(separator=" ").lower()
+
+    if '"availability":"out_of_stock"' in soup_str.lower() or '"listingstatus":"out_of_stock"' in soup_str.lower() or '"productstatus":"out_of_stock"' in soup_str.lower():
+        is_in_stock = False
+    elif "schema.org/outofstock" in soup_str.lower():
+        is_in_stock = False
+    elif any(term in page_text for term in ["currently out of stock", "sold out", "item is out of stock", "notify me when available"]):
+        is_in_stock = False
+
+    # Check button tags
+    if is_in_stock:
+        for btn in soup.find_all(["button", "a", "div"]):
+            btn_text = btn.get_text(strip=True).upper()
+            if btn_text in ["NOTIFY ME", "CURRENTLY OUT OF STOCK", "SOLD OUT"]:
+                is_in_stock = False
+                break
+
+    # If out of stock and price was not found, set to 0.0
+    if not is_in_stock and price is None:
+        price = 0.0
+
     if price is None:
         return None
 
@@ -572,11 +622,12 @@ def parse_flipkart_soup(soup: BeautifulSoup, url: str, pincode: Optional[str] = 
         "platform_badge": "🛍️ Flipkart",
         "item_id": item_id,
         "title": title,
-        "price": round(price, 2),
+        "price": round(price, 2) if price else 0.0,
         "currency": "₹",
         "url": url,
         "image_url": img_url,
         "pincode": str(pincode or "110001"),
+        "in_stock": is_in_stock,
     }
 
 
@@ -691,6 +742,21 @@ def fetch_jiomart_product(url: str, pincode: Optional[str] = None) -> Optional[D
             m = re.search(r"-(\d+)(?:[/?]|$)", clean_target) or re.search(r"/(\d+)(?:[/?]|$)", clean_target)
             item_id = m.group(1) if m else "JIOMART_ITEM"
 
+        # Availability / Out-of-Stock Detection for JioMart
+        is_in_stock = True
+        res_lower = res.text.lower()
+        if "schema.org/outofstock" in res_lower:
+            is_in_stock = False
+        elif any(phrase in res_lower for phrase in ['"availability":"out_of_stock"', '"in_stock":false', '"stock_status":"out_of_stock"']):
+            is_in_stock = False
+        else:
+            page_text = soup.get_text(separator=" ").lower()
+            if any(term in page_text for term in ["out of stock", "sold out", "currently unavailable"]):
+                is_in_stock = False
+
+        if not is_in_stock and price is None:
+            price = 0.0
+
         if not title or price is None:
             logger.warning(f"Could not extract JioMart title or price for {clean_target}")
             return None
@@ -700,11 +766,12 @@ def fetch_jiomart_product(url: str, pincode: Optional[str] = None) -> Optional[D
             "platform_badge": "🟢 JioMart",
             "item_id": item_id,
             "title": title,
-            "price": round(price, 2),
+            "price": round(price, 2) if price else 0.0,
             "currency": "₹",
             "url": res.url,
             "image_url": img_url,
             "pincode": str(pincode or "110001"),
+            "in_stock": is_in_stock,
         }
     except Exception as e:
         logger.error(f"Error scraping JioMart: {e}")
@@ -769,6 +836,19 @@ def fetch_reliancedigital_product(url: str, pincode: Optional[str] = None) -> Op
             if soup.title and "Reliance Digital" in soup.title.string:
                 title = soup.title.string.split("-")[0].strip()
 
+        # Availability / Out-of-Stock Detection for Reliance Digital
+        is_in_stock = True
+        res_lower = res.text.lower()
+        if '"stocklevelstatus":"outofstock"' in res_lower or '"isoutofstock":true' in res_lower:
+            is_in_stock = False
+        elif "schema.org/outofstock" in res_lower:
+            is_in_stock = False
+        elif any(term in res_lower for term in ["temporarily out of stock", "sold out", "item out of stock"]):
+            is_in_stock = False
+
+        if not is_in_stock and price is None:
+            price = 0.0
+
         if not title or price is None:
             logger.warning(f"Could not extract Reliance Digital details for {clean_target}")
             return None
@@ -778,11 +858,12 @@ def fetch_reliancedigital_product(url: str, pincode: Optional[str] = None) -> Op
             "platform_badge": "🔴 Reliance Digital",
             "item_id": item_id,
             "title": title,
-            "price": round(price, 2),
+            "price": round(price, 2) if price else 0.0,
             "currency": "₹",
             "url": res.url,
             "image_url": img_url,
             "pincode": str(pincode or "110001"),
+            "in_stock": is_in_stock,
         }
     except Exception as e:
         logger.error(f"Error scraping Reliance Digital: {e}")
@@ -840,6 +921,19 @@ def fetch_croma_product(url: str, pincode: Optional[str] = None) -> Optional[Dic
             m = re.search(r"/p/(\d+)", clean_target)
             item_id = m.group(1) if m else "CROMA_ITEM"
 
+        # Availability / Out-of-Stock Detection for Croma
+        is_in_stock = True
+        res_lower = res.text.lower()
+        if '"stocklevelstatus":"outofstock"' in res_lower or '"isoutofstock":true' in res_lower or '"outofstock":true' in res_lower:
+            is_in_stock = False
+        elif "schema.org/outofstock" in res_lower:
+            is_in_stock = False
+        elif any(term in res_lower for term in ["out of stock", "sold out", "currently unavailable"]):
+            is_in_stock = False
+
+        if not is_in_stock and price is None:
+            price = 0.0
+
         if not title or price is None:
             logger.warning(f"Could not extract Croma details for {clean_target}")
             return None
@@ -849,11 +943,12 @@ def fetch_croma_product(url: str, pincode: Optional[str] = None) -> Optional[Dic
             "platform_badge": "⚪ Croma",
             "item_id": item_id,
             "title": title,
-            "price": round(price, 2),
+            "price": round(price, 2) if price else 0.0,
             "currency": "₹",
             "url": res.url,
             "image_url": img_url,
             "pincode": str(pincode or "110001"),
+            "in_stock": is_in_stock,
         }
     except Exception as e:
         logger.error(f"Error scraping Croma: {e}")
@@ -950,6 +1045,17 @@ def fetch_samsung_product(url: str, pincode: Optional[str] = None) -> Optional[D
             if soup.title and soup.title.string:
                 title = soup.title.string.split("|")[0].replace("Buy", "").strip()
 
+        # Availability / Out-of-Stock Detection for Samsung
+        is_in_stock = True
+        res_lower = res.text.lower()
+        if "schema.org/outofstock" in res_lower:
+            is_in_stock = False
+        elif any(term in res_lower for term in ["out of stock", "sold out", "currently unavailable"]):
+            is_in_stock = False
+
+        if not is_in_stock and price is None:
+            price = 0.0
+
         if not title or price is None:
             logger.warning(f"Could not extract Samsung details for {clean_target}")
             return None
@@ -959,11 +1065,12 @@ def fetch_samsung_product(url: str, pincode: Optional[str] = None) -> Optional[D
             "platform_badge": "🌌 Samsung",
             "item_id": item_id,
             "title": title,
-            "price": round(price, 2),
+            "price": round(price, 2) if price else 0.0,
             "currency": "₹",
             "url": res.url,
             "image_url": img_url,
             "pincode": str(pincode or "110001"),
+            "in_stock": is_in_stock,
         }
     except Exception as e:
         logger.error(f"Error scraping Samsung: {e}")

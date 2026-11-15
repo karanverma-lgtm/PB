@@ -60,15 +60,35 @@ def run_tests():
         assert prod["title"], "Missing title"
         assert prod["item_id"], "Missing item_id"
         assert prod["currency"] in ["₹", "$"], f"Unexpected currency {prod['currency']}"
+        assert "in_stock" in prod and isinstance(prod["in_stock"], bool), "Missing or invalid in_stock status"
 
         print(f"  ✅ {prod['platform_badge']} ({prod['platform']})")
         print(f"     Title: {prod['title'][:55]}...")
         print(f"     Price: {prod['currency']}{prod['price']:,.2f}")
+        print(f"     Stock: {'🟢 In Stock' if prod['in_stock'] else '❌ Out of Stock'}")
         print(f"     Item ID: {prod['item_id']}")
         fetched_products.append(prod)
 
-    # 3. Database Integration Test
-    print("\n💾 3. Database Integration Tests:")
+    # 3. Stock Status & Availability Parsing Unit Tests
+    print("\n📦 3. Stock Status Detection Tests (Synthetic & HTML):")
+    from bs4 import BeautifulSoup
+
+    # Amazon OOS Soup
+    amz_oos_html = '<html><body><span id="productTitle">Sony WH-1000XM5</span><div id="availability"><span class="a-color-price">Currently unavailable.</span></div></body></html>'
+    amz_parsed = product_service.parse_amazon_soup(BeautifulSoup(amz_oos_html, "html.parser"), "B09XS7JWHH", "https://amazon.in/dp/B09XS7JWHH")
+    assert amz_parsed is not None, "Failed to parse Amazon OOS soup"
+    assert amz_parsed["in_stock"] is False, f"Expected in_stock=False, got {amz_parsed['in_stock']}"
+    print("  ✅ Amazon Out-of-Stock detected correctly from 'Currently unavailable'.")
+
+    # Flipkart OOS Soup
+    fk_oos_html = '<html><head><title>Pixel 8 Pro - Flipkart</title></head><body><span class="VU-ZEz">Google Pixel 8 Pro</span><div>CURRENTLY OUT OF STOCK</div><button>NOTIFY ME</button></body></html>'
+    fk_parsed = product_service.parse_flipkart_soup(BeautifulSoup(fk_oos_html, "html.parser"), "https://flipkart.com/p/itm123")
+    assert fk_parsed is not None, "Failed to parse Flipkart OOS soup"
+    assert fk_parsed["in_stock"] is False, f"Expected in_stock=False, got {fk_parsed['in_stock']}"
+    print("  ✅ Flipkart Out-of-Stock detected correctly from 'NOTIFY ME' / 'CURRENTLY OUT OF STOCK'.")
+
+    # 4. Database Integration Test
+    print("\n💾 4. Database Integration & Stock Transition Tests:")
     database.init_db()
     test_user_id = 999888777
     database.clear_user_products(test_user_id)
@@ -79,13 +99,14 @@ def run_tests():
     assert user_pin == "560001", f"Expected pincode 560001, got {user_pin}"
     print("  ✅ User delivery PIN code storage & retrieval verified (560001).")
 
-    # Test pending product caching across restarts
+    # Test pending product caching across restarts with in_stock
     sample_prod = fetched_products[0]
     database.save_pending_product(sample_prod)
     cached = database.get_pending_product(sample_prod["item_id"])
     assert cached is not None, "Pending product was not saved"
     assert cached["item_id"] == sample_prod["item_id"], "Mismatch in pending product item_id"
-    print("  ✅ Pending product caching verified (survives bot restarts).")
+    assert "in_stock" in cached and isinstance(cached["in_stock"], bool), "Missing in_stock in cached pending product"
+    print("  ✅ Pending product caching with stock status verified (survives bot restarts).")
 
     inserted_ids = []
     for prod in fetched_products:
@@ -101,20 +122,37 @@ def run_tests():
             current_price=prod["price"],
             currency=prod["currency"],
             pincode=user_pin,
+            is_in_stock=prod.get("in_stock", True),
         )
         inserted_ids.append(pid)
 
     stored = database.get_user_products(test_user_id)
     assert len(stored) == len(fetched_products), f"Expected {len(fetched_products)} items, got {len(stored)}"
     assert stored[0]["pincode"] == "560001", f"Expected stored item pincode 560001, got {stored[0].get('pincode')}"
-    print(f"  ✅ Successfully tracked all {len(stored)} products in SQLite database with custom delivery PIN.")
+    assert "is_in_stock" in stored[0], "Missing is_in_stock in stored product"
+    print(f"  ✅ Successfully tracked all {len(stored)} products in SQLite database with custom delivery PIN and stock status.")
+
+    # Test Stock Transitions in DB
+    test_prod_id = inserted_ids[0]
+    # Transition to OOS
+    database.update_product_stock_status(test_prod_id, is_in_stock=False)
+    updated_items = {item["id"]: item for item in database.get_user_products(test_user_id)}
+    assert updated_items[test_prod_id]["is_in_stock"] == 0, "Failed to transition to Out-of-Stock (expected 0)"
+    print("  ✅ Database Out-of-Stock transition verified (is_in_stock: 1 ➔ 0).")
+
+    # Transition to Back-in-Stock (Restock) with new price
+    database.update_product_stock_status(test_prod_id, is_in_stock=True, current_price=64999.0)
+    updated_items = {item["id"]: item for item in database.get_user_products(test_user_id)}
+    assert updated_items[test_prod_id]["is_in_stock"] == 1, "Failed to transition to Back-in-Stock (expected 1)"
+    assert updated_items[test_prod_id]["current_price"] == 64999.0, "Failed to update price on restock"
+    print("  ✅ Database Back-in-Stock transition verified (is_in_stock: 0 ➔ 1 with live price).")
 
     # Cleanup test user entries
     database.clear_user_products(test_user_id)
     print("  ✅ Cleanup completed.")
 
     print("\n" + "=" * 60)
-    print("🎉 ALL TESTS PASSED! 6 PLATFORMS FULLY OPERATIONAL!")
+    print("🎉 ALL TESTS PASSED! 6 PLATFORMS & STOCK NOTIFICATIONS FULLY OPERATIONAL!")
     print("=" * 60)
 
 if __name__ == "__main__":

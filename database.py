@@ -55,7 +55,10 @@ def init_db() -> None:
                 target_price REAL NOT NULL,
                 initial_price REAL NOT NULL,
                 current_price REAL NOT NULL,
+                lowest_price REAL DEFAULT NULL,
                 currency TEXT DEFAULT '₹',
+                pincode TEXT DEFAULT '110001',
+                is_in_stock INTEGER DEFAULT 1,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 last_checked_at TIMESTAMP NULL,
                 is_active INTEGER DEFAULT 1,
@@ -87,6 +90,7 @@ def init_db() -> None:
                 currency TEXT DEFAULT '₹',
                 url TEXT NOT NULL,
                 image_url TEXT,
+                is_in_stock INTEGER DEFAULT 1,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
             """
@@ -114,6 +118,20 @@ def init_db() -> None:
             except Exception:
                 pass
 
+        if "is_in_stock" not in columns:
+            try:
+                cursor.execute("ALTER TABLE tracked_products ADD COLUMN is_in_stock INTEGER DEFAULT 1")
+            except Exception:
+                pass
+
+        cursor.execute("PRAGMA table_info(pending_products)")
+        pending_columns = [row["name"] for row in cursor.fetchall()]
+        if "is_in_stock" not in pending_columns:
+            try:
+                cursor.execute("ALTER TABLE pending_products ADD COLUMN is_in_stock INTEGER DEFAULT 1")
+            except Exception:
+                pass
+
         cursor.execute(
             "CREATE INDEX IF NOT EXISTS idx_products_active ON tracked_products (is_active)"
         )
@@ -130,14 +148,15 @@ def save_pending_product(product: Dict[str, Any]) -> None:
     if not product or not product.get("item_id"):
         return
     try:
+        is_in_stock = 1 if product.get("in_stock", True) else 0
         with get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """
                 INSERT INTO pending_products (
-                    item_id, platform, platform_badge, title, price, currency, url, image_url, updated_at
+                    item_id, platform, platform_badge, title, price, currency, url, image_url, is_in_stock, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ON CONFLICT(item_id) DO UPDATE SET
                     platform = excluded.platform,
                     platform_badge = excluded.platform_badge,
@@ -146,6 +165,7 @@ def save_pending_product(product: Dict[str, Any]) -> None:
                     currency = excluded.currency,
                     url = excluded.url,
                     image_url = excluded.image_url,
+                    is_in_stock = excluded.is_in_stock,
                     updated_at = CURRENT_TIMESTAMP
                 """,
                 (
@@ -153,10 +173,11 @@ def save_pending_product(product: Dict[str, Any]) -> None:
                     product.get("platform", "Unknown"),
                     product.get("platform_badge", "📦"),
                     product["title"],
-                    product["price"],
+                    product.get("price") or 0.0,
                     product.get("currency", "₹"),
                     product["url"],
                     product.get("image_url"),
+                    is_in_stock,
                 ),
             )
             conn.commit()
@@ -171,14 +192,18 @@ def get_pending_product(item_id: str) -> Optional[Dict[str, Any]]:
             cursor = conn.cursor()
             cursor.execute(
                 """
-                SELECT item_id, platform, platform_badge, title, price, currency, url, image_url
+                SELECT item_id, platform, platform_badge, title, price, currency, url, image_url, COALESCE(is_in_stock, 1) AS is_in_stock
                 FROM pending_products
                 WHERE item_id = ?
                 """,
                 (item_id,),
             )
             row = cursor.fetchone()
-            return dict(row) if row else None
+            if row:
+                res = dict(row)
+                res["in_stock"] = bool(res.get("is_in_stock", 1))
+                return res
+            return None
     except Exception:
         return None
 
@@ -229,9 +254,11 @@ def add_tracked_product(
     current_price: float,
     currency: str = "₹",
     pincode: Optional[str] = None,
+    is_in_stock: bool = True,
 ) -> int:
     """Add a new product price drop alert or update target price if already actively tracked."""
     pin = pincode or get_user_pincode(user_id)
+    stock_val = 1 if is_in_stock else 0
     with get_db_connection() as conn:
         cursor = conn.cursor()
         # Prevent duplicate active trackers for the same user and product
@@ -249,10 +276,10 @@ def add_tracked_product(
             cursor.execute(
                 """
                 UPDATE tracked_products
-                SET target_price = ?, current_price = ?, url = ?, image_url = ?, currency = ?, pincode = ?
+                SET target_price = ?, current_price = ?, url = ?, image_url = ?, currency = ?, pincode = ?, is_in_stock = ?
                 WHERE id = ?
                 """,
-                (target_price, current_price, url, image_url, currency, pin, product_id),
+                (target_price, current_price, url, image_url, currency, pin, stock_val, product_id),
             )
             conn.commit()
             return product_id
@@ -261,9 +288,9 @@ def add_tracked_product(
             """
             INSERT INTO tracked_products (
                 user_id, chat_id, platform, asin, title, url, image_url,
-                target_price, initial_price, current_price, lowest_price, currency, pincode, is_active
+                target_price, initial_price, current_price, lowest_price, currency, pincode, is_in_stock, is_active
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
             """,
             (
                 user_id,
@@ -279,6 +306,7 @@ def add_tracked_product(
                 current_price,
                 currency,
                 pin,
+                stock_val,
             ),
         )
         conn.commit()
@@ -292,7 +320,8 @@ def get_user_products(user_id: int) -> List[Dict[str, Any]]:
         cursor.execute(
             """
             SELECT id, user_id, chat_id, platform, asin AS item_id, title, url, image_url,
-                   target_price, initial_price, current_price, lowest_price, currency, pincode, created_at
+                   target_price, initial_price, current_price, lowest_price, currency, pincode,
+                   COALESCE(is_in_stock, 1) AS is_in_stock, created_at
             FROM tracked_products
             WHERE user_id = ? AND is_active = 1
             ORDER BY created_at DESC
@@ -309,12 +338,43 @@ def get_all_active_products() -> List[Dict[str, Any]]:
         cursor.execute(
             """
             SELECT id, user_id, chat_id, platform, asin AS item_id, title, url, image_url,
-                   target_price, initial_price, current_price, lowest_price, currency, pincode
+                   target_price, initial_price, current_price, lowest_price, currency, pincode,
+                   COALESCE(is_in_stock, 1) AS is_in_stock
             FROM tracked_products
             WHERE is_active = 1
             """
         )
         return [dict(row) for row in cursor.fetchall()]
+
+
+def update_product_stock_status(product_id: int, is_in_stock: bool, current_price: Optional[float] = None) -> None:
+    """Update stock availability status and optionally new price."""
+    stock_val = 1 if is_in_stock else 0
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        if is_in_stock and current_price is not None and current_price > 0:
+            cursor.execute(
+                """
+                UPDATE tracked_products
+                SET is_in_stock = ?,
+                    current_price = ?,
+                    lowest_price = MIN(COALESCE(lowest_price, current_price, ?), ?),
+                    last_checked_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (stock_val, current_price, current_price, current_price, product_id),
+            )
+        else:
+            cursor.execute(
+                """
+                UPDATE tracked_products
+                SET is_in_stock = ?,
+                    last_checked_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (stock_val, product_id),
+            )
+        conn.commit()
 
 
 def update_product_price(product_id: int, new_price: float) -> None:
