@@ -311,9 +311,12 @@ async def track_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     title_escaped = html.escape(product["title"][:75])
     badge_escaped = html.escape(product.get("platform_badge", platform))
 
+    user_prods = database.get_user_products(user.id)
+    item_num = next((i for i, item in enumerate(user_prods, 1) if item["id"] == product_id), len(user_prods))
+
     if not in_stock:
         caption = (
-            f"🔔 <b>Out-of-Stock Item Tracked!</b> (ID: <code>#{product_id}</code>)\n"
+            f"🔔 <b>Out-of-Stock Item Tracked!</b> (Item #{item_num} in your list)\n"
             f"━━━━━━━━━━━━━━━━━━━\n"
             f"🏷️ <b>Platform:</b> <code>{badge_escaped}</code>\n"
             f"📦 <b>{title_escaped}...</b>\n\n"
@@ -325,7 +328,7 @@ async def track_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
     else:
         caption = (
-            f"✅ <b>Product Successfully Tracked!</b> (ID: <code>#{product_id}</code>)\n"
+            f"✅ <b>Product Successfully Tracked!</b> (Item #{item_num} in your list)\n"
             f"━━━━━━━━━━━━━━━━━━━\n"
             f"🏷️ <b>Platform:</b> <code>{badge_escaped}</code>\n"
             f"📦 <b>{title_escaped}...</b>\n\n"
@@ -406,7 +409,7 @@ async def list_products_command(update: Update, context: ContextTypes.DEFAULT_TY
     current_text = f"📋 <b>Your Tracked Products ({len(products)}):</b>\n━━━━━━━━━━━━━━━━━━━\n\n"
     current_keyboard = []
 
-    for p in products:
+    for num, p in enumerate(products, 1):
         platform_icon = icons.get(p.get("platform"), "🏷️")
         p_title = html.escape(p["title"][:38])
         safe_url = html.escape(p["url"])
@@ -416,7 +419,7 @@ async def list_products_command(update: Update, context: ContextTypes.DEFAULT_TY
         if not is_stock:
             stock_badge = "❌ <b>Out of Stock</b> (Monitoring Restock 🔔)"
             entry = (
-                f"• <b>ID <code>#{p['id']}</code>:</b> {platform_icon} <a href=\"{safe_url}\">{p_title}...</a>\n"
+                f"• <b>#{num}:</b> {platform_icon} <a href=\"{safe_url}\">{p_title}...</a>\n"
                 f"  {stock_badge} (📍 <code>{p_pin}</code>)\n\n"
             )
         else:
@@ -424,13 +427,13 @@ async def list_products_command(update: Update, context: ContextTypes.DEFAULT_TY
             curr_str = f"{p['currency']}{p['current_price']:,.2f}"
             target_str = f"{p['currency']}{p['target_price']:,.2f}"
             entry = (
-                f"• <b>ID <code>#{p['id']}</code>:</b> {platform_icon} <a href=\"{safe_url}\">{p_title}...</a>\n"
+                f"• <b>#{num}:</b> {platform_icon} <a href=\"{safe_url}\">{p_title}...</a>\n"
                 f"  💰 Current: <code>{curr_str}</code> ➔ Target: <code>{target_str}</code> (📍 <code>{p_pin}</code>)\n"
                 f"  <i>Needs {p['currency']}{savings:,.2f} drop</i>\n\n"
             )
         buttons = [
-            InlineKeyboardButton(f"🛒 #{p['id']} View", url=p["url"]),
-            InlineKeyboardButton(f"❌ Stop #{p['id']}", callback_data=f"del_{p['id']}"),
+            InlineKeyboardButton(f"🛒 #{num} View", url=p["url"]),
+            InlineKeyboardButton(f"❌ Stop #{num}", callback_data=f"del_{p['id']}"),
         ]
 
         if len(current_text) + len(entry) > 3500 or len(current_keyboard) >= 20:
@@ -457,23 +460,45 @@ async def list_products_command(update: Update, context: ContextTypes.DEFAULT_TY
 
 
 async def deltrack_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Delete a tracked product by ID."""
+    """Delete a tracked product by its personal list number (e.g. /deltrack 1) or ID."""
     user = update.effective_user
     if not context.args:
-        await update.message.reply_text("⚠️ Usage: <code>/deltrack &lt;ID&gt;</code>\nCheck your product IDs with <code>/products</code>.", parse_mode=ParseMode.HTML)
+        await update.message.reply_text("⚠️ Usage: <code>/deltrack &lt;number&gt;</code>\nExample: <code>/deltrack 1</code> (removes #1 from your <code>/products</code> list).", parse_mode=ParseMode.HTML)
         return
 
     try:
-        product_id = int(context.args[0].replace("#", ""))
+        req_num = int(context.args[0].replace("#", ""))
     except ValueError:
-        await update.message.reply_text("❌ Product ID must be a number.")
+        await update.message.reply_text("❌ Product number must be a number (e.g. <code>/deltrack 1</code>).", parse_mode=ParseMode.HTML)
         return
 
-    success = database.delete_tracked_product(product_id, user_id=user.id)
-    if success:
-        await update.message.reply_text(f"✅ Product <code>#{product_id}</code> tracking stopped.", parse_mode=ParseMode.HTML)
+    user_products = database.get_user_products(user.id)
+    target_id = None
+    target_title = None
+
+    # Check 1-based index in user's active list
+    if 1 <= req_num <= len(user_products):
+        target_prod = user_products[req_num - 1]
+        target_id = target_prod["id"]
+        target_title = target_prod["title"]
     else:
-        await update.message.reply_text(f"❌ Product <code>#{product_id}</code> not found or already removed.", parse_mode=ParseMode.HTML)
+        # Fallback to direct DB id if user supplied an exact database ID
+        for p in user_products:
+            if p["id"] == req_num:
+                target_id = p["id"]
+                target_title = p["title"]
+                break
+
+    if target_id is None:
+        await update.message.reply_text(f"❌ Product <code>#{req_num}</code> not found in your tracking list.", parse_mode=ParseMode.HTML)
+        return
+
+    success = database.delete_tracked_product(target_id, user_id=user.id)
+    if success:
+        short_title = html.escape(target_title[:45]) if target_title else f"#{req_num}"
+        await update.message.reply_text(f"✅ Stopped tracking <b>{short_title}...</b>", parse_mode=ParseMode.HTML)
+    else:
+        await update.message.reply_text(f"❌ Could not remove product <code>#{req_num}</code>.", parse_mode=ParseMode.HTML)
 
 
 async def cleartrack_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -626,8 +651,11 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         title_escaped = html.escape(product["title"][:70])
         badge_escaped = html.escape(product.get("platform_badge", product["platform"]))
 
+        user_prods = database.get_user_products(query.from_user.id)
+        item_num = next((i for i, p in enumerate(user_prods, 1) if p["id"] == product_id), len(user_prods))
+
         confirm = (
-            f"🔔 <b>Back-in-Stock Alert Activated!</b> (ID: <code>#{product_id}</code>)\n"
+            f"🔔 <b>Back-in-Stock Alert Activated!</b> (Item #{item_num} in your list)\n"
             f"━━━━━━━━━━━━━━━━━━━\n"
             f"🏷️ <b>Platform:</b> <code>{badge_escaped}</code>\n"
             f"📦 <b>{title_escaped}...</b>\n\n"
@@ -688,8 +716,11 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         title_escaped = html.escape(product["title"][:70])
         badge_escaped = html.escape(product.get("platform_badge", product["platform"]))
 
+        user_prods = database.get_user_products(query.from_user.id)
+        item_num = next((i for i, p in enumerate(user_prods, 1) if p["id"] == product_id), len(user_prods))
+
         confirm = (
-            f"✅ <b>Tracking Alert Activated!</b> (ID: <code>#{product_id}</code>)\n"
+            f"✅ <b>Tracking Alert Activated!</b> (Item #{item_num} in your list)\n"
             f"━━━━━━━━━━━━━━━━━━━\n"
             f"🏷️ <b>Platform:</b> <code>{badge_escaped}</code>\n"
             f"📦 <b>{title_escaped}...</b>\n\n"
@@ -718,9 +749,9 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         except Exception:
             pass
         if success:
-            await query.message.reply_text(f"🛑 Tracking stopped for product <code>#{product_id}</code>.", parse_mode=ParseMode.HTML)
+            await query.message.reply_text("🛑 Tracking stopped for this product.", parse_mode=ParseMode.HTML)
         else:
-            await query.message.reply_text(f"❌ Product <code>#{product_id}</code> was already removed.", parse_mode=ParseMode.HTML)
+            await query.message.reply_text("❌ Product was already removed.", parse_mode=ParseMode.HTML)
 
     elif data.startswith("pin_"):
         new_pin = data.split("_")[1]
@@ -974,7 +1005,7 @@ async def check_prices_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                 else:
                     diff = new_price - target_price
                     update_text = (
-                        f"📊 <b>{badge_escaped} Price Check Update</b> (ID: <code>#{product_id}</code>)\n"
+                        f"📊 <b>{badge_escaped} Price Check Update</b>\n"
                         f"━━━━━━━━━━━━━━━━━━━\n"
                         f"📦 <b>{title_escaped}...</b>\n\n"
                         f"💰 <b>Current Price:</b> <code>{currency}{new_price:,.2f}</code>\n"
