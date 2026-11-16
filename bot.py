@@ -1015,26 +1015,14 @@ async def check_prices_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                         f"━━━━━━━━━━━━━━━━━━━\n"
                         f"⚡ Target price reached! Click below to buy or stop tracking."
                     )
+                    sent = await send_alert_safely(context, chat_id, user_id, update_text, image_url, reply_markup)
+                    if not sent:
+                        break
+                    # Micro-pause between messages to the same chat to respect 1 msg/sec limit
+                    await asyncio.sleep(0.5)
                 else:
-                    diff = new_price - target_price
-                    update_text = (
-                        f"📊 <b>{badge_escaped} Price Check Update</b>\n"
-                        f"━━━━━━━━━━━━━━━━━━━\n"
-                        f"📦 <b>{title_escaped}...</b>\n\n"
-                        f"💰 <b>Current Price:</b> <code>{currency}{new_price:,.2f}</code>\n"
-                        f"🎯 <b>Desired Set Price:</b> <code>{currency}{target_price:,.2f}</code>\n"
-                        f"📈 <b>Difference:</b> <code>{currency}{diff:,.2f}</code> above your target\n"
-                        f"📍 <b>Delivery PIN:</b> <code>{pin}</code>\n"
-                        f"━━━━━━━━━━━━━━━━━━━\n"
-                        f"🕒 <i>Next automated check in {format_interval(CHECK_INTERVAL)}.</i>"
-                    )
-
-                sent = await send_alert_safely(context, chat_id, user_id, update_text, image_url, reply_markup)
-                if not sent:
-                    break
-
-                # Micro-pause between messages to the same chat to respect 1 msg/sec limit
-                await asyncio.sleep(0.5)
+                    # Price is still above target: silently record new price in DB without notifying/spamming the user
+                    logger.debug(f"Silent check #{product_id} on {platform}: {new_price} > target {target_price}")
 
             # Randomized human-like jitter delay between product URLs to prevent platform rate limits
             await asyncio.sleep(random.uniform(1.5, 3.5))
