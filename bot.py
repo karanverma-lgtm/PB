@@ -38,6 +38,7 @@ import product_service
 # Load environment variables
 load_dotenv()
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", 5400))
 
 # Setup Logging
 logging.basicConfig(
@@ -54,6 +55,18 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 # ---------------------------------------------------------
 # Helper Functions
 # ---------------------------------------------------------
+
+def format_interval(seconds: int) -> str:
+    """Format interval in seconds into human readable text (e.g. 1 hour and 30 minutes)."""
+    hrs = seconds // 3600
+    mins = (seconds % 3600) // 60
+    parts = []
+    if hrs > 0:
+        parts.append(f"{hrs} hour" if hrs == 1 else f"{hrs} hours")
+    if mins > 0:
+        parts.append(f"{mins} minute" if mins == 1 else f"{mins} minutes")
+    return " and ".join(parts) if parts else f"{seconds} seconds"
+
 
 def clean_price_input(price_str: str) -> float:
     """Parse user numeric price input."""
@@ -1013,7 +1026,7 @@ async def check_prices_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                         f"📈 <b>Difference:</b> <code>{currency}{diff:,.2f}</code> above your target\n"
                         f"📍 <b>Delivery PIN:</b> <code>{pin}</code>\n"
                         f"━━━━━━━━━━━━━━━━━━━\n"
-                        f"🕒 <i>Next automated check in 4 hours.</i>"
+                        f"🕒 <i>Next automated check in {format_interval(CHECK_INTERVAL)}.</i>"
                     )
 
                 sent = await send_alert_safely(context, chat_id, user_id, update_text, image_url, reply_markup)
@@ -1065,11 +1078,11 @@ def main() -> None:
     # Direct message handler (Auto-detects when a product link is pasted)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url_message))
 
-    # Background Job: Configurable polling interval (default: 14400s / 4 hours)
-    poll_interval = int(os.getenv("CHECK_INTERVAL", 14400))
+    # Background Job: Configurable polling interval (default: 5400s / 1 hr 30 mins)
+    poll_interval = CHECK_INTERVAL
     if app.job_queue:
         app.job_queue.run_repeating(check_prices_job, interval=poll_interval, first=15)
-        logger.info(f"Price drop background job registered ({poll_interval}s interval - every {poll_interval // 3600} hours).")
+        logger.info(f"Price drop background job registered ({poll_interval}s interval - every {format_interval(poll_interval)}).")
 
     print("\n" + "=" * 65)
     print("🛍️ Multi-Platform Price Drop Bot (@Stockmightybot) Live!")

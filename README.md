@@ -24,7 +24,7 @@ A full-featured Telegram bot that tracks product prices across **11 major e-comm
    - **Method B:** Use `/track <PRODUCT_URL> <TARGET_PRICE>` to set an exact target price.
 
 3. **⏰ 24/7 Background Price Monitoring (Every 4 Hours)**
-   - Runs an automated background worker checking all active tracked items every 4 hours (`14,400s`, configurable via `CHECK_INTERVAL`).
+   - Runs an automated background worker checking all active tracked items every 1.5 hours (`5,400s`, configurable via `CHECK_INTERVAL`).
    - **Periodic Updates:** Every time the bot checks an item, it sends you a status notification showing the current live price, your target price, how much is remaining, and a 1-click **"🛑 Stop Tracking"** button.
    - **Price Drop Alerts:** When the price drops to or below your target, you receive an instant alert with product photo, amount saved, and direct link to buy.
 
