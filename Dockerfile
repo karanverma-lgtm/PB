@@ -30,9 +30,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libasound2 \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies and pre-fetch stealth browser binaries
+# Install Python dependencies and pre-fetch stealth browser binaries (non-fatal if upstream release is unavailable)
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt && python -m camoufox fetch
+RUN pip install --no-cache-dir -r requirements.txt && (python -m camoufox fetch || echo "Camoufox binary fetch skipped; running with curl_cffi")
 
 # Copy application source code
 COPY . .
