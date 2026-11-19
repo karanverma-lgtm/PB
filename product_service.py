@@ -30,8 +30,11 @@ from bs4 import BeautifulSoup
 logger = logging.getLogger(__name__)
 
 # Camoufox stealth browser integration (C++ engine level anti-bot bypass)
+# Verify both package AND local browser binary are installed (instant disk check, no network)
 try:
     from camoufox.sync_api import Camoufox
+    from camoufox.pkgman import installed_verstr as _camoufox_installed_verstr
+    _camoufox_installed_verstr()
     CAMOUFOX_AVAILABLE = True
 except Exception:
     CAMOUFOX_AVAILABLE = False
@@ -1287,6 +1290,7 @@ def parse_myntra_soup(soup: BeautifulSoup, raw_html: str, url: str, pincode: Opt
     """Parse product title, price, currency, image, and item ID from Myntra HTML."""
     title, price, item_id, img_url = None, None, None, None
     in_stock = True
+    stock_determined = False
 
     # 1. Search inside window.__myx script
     idx = raw_html.find("window.__myx = ")
@@ -1323,13 +1327,15 @@ def parse_myntra_soup(soup: BeautifulSoup, raw_html: str, url: str, pincode: Opt
                 sizes = pdp.get("sizes", [])
                 if sizes:
                     in_stock = any(s.get("available") for s in sizes)
+                    stock_determined = True
                 elif "inStock" in pdp:
                     in_stock = bool(pdp.get("inStock"))
+                    stock_determined = True
             except Exception:
                 pass
 
     # 2. JSON-LD Fallback
-    if not title or price is None:
+    if not title or price is None or not stock_determined:
         for s in soup.find_all("script", type="application/ld+json"):
             try:
                 ld = json.loads(s.string)
@@ -1339,12 +1345,14 @@ def parse_myntra_soup(soup: BeautifulSoup, raw_html: str, url: str, pincode: Opt
                     if not img_url:
                         img = ld.get("image")
                         img_url = img[0] if isinstance(img, list) else img
-                    if price is None and "offers" in ld:
+                    if "offers" in ld:
                         offers = ld.get("offers", {})
-                        if isinstance(offers, dict) and offers.get("price"):
-                            price = float(offers["price"])
-                        if "availability" in offers:
-                            in_stock = "outofstock" not in str(offers.get("availability")).lower()
+                        if isinstance(offers, dict):
+                            if price is None and offers.get("price"):
+                                price = float(offers["price"])
+                            if not stock_determined and "availability" in offers:
+                                in_stock = "outofstock" not in str(offers.get("availability")).lower()
+                                stock_determined = True
             except Exception:
                 pass
 
@@ -1364,8 +1372,10 @@ def parse_myntra_soup(soup: BeautifulSoup, raw_html: str, url: str, pincode: Opt
                 if m_u:
                     img_url = m_u.group(1)
 
-    if "out of stock" in raw_html.lower() or "outofstock" in raw_html.lower():
-        in_stock = False
+    if not stock_determined:
+        visible_text = soup.get_text(" ", strip=True).lower()
+        if "this product is currently out of stock" in visible_text or "sold out" in visible_text:
+            in_stock = False
 
     if not in_stock and price is None:
         price = 0.0
@@ -1429,6 +1439,7 @@ def parse_nykaa_soup(soup: BeautifulSoup, raw_html: str, url: str, pincode: Opti
     """Parse product title, price, currency, image, and item ID from Nykaa HTML."""
     title, price, item_id, img_url = None, None, None, None
     in_stock = True
+    stock_determined = False
 
     # 1. Check window.__PRELOADED_STATE__
     idx = raw_html.find("window.__PRELOADED_STATE__")
@@ -1456,11 +1467,12 @@ def parse_nykaa_soup(soup: BeautifulSoup, raw_html: str, url: str, pincode: Opti
                 img_url = prod.get("imageUrl")
                 if "inStock" in prod:
                     in_stock = bool(prod.get("inStock"))
+                    stock_determined = True
             except Exception:
                 pass
 
     # 2. JSON-LD Fallback
-    if not title or price is None:
+    if not title or price is None or not stock_determined:
         for s in soup.find_all("script", type="application/ld+json"):
             try:
                 ld = json.loads(s.string)
@@ -1470,12 +1482,14 @@ def parse_nykaa_soup(soup: BeautifulSoup, raw_html: str, url: str, pincode: Opti
                     if not img_url:
                         img = ld.get("image")
                         img_url = img[0] if isinstance(img, list) else img
-                    if price is None and "offers" in ld:
+                    if "offers" in ld:
                         offers = ld.get("offers", {})
-                        if isinstance(offers, dict) and offers.get("price"):
-                            price = float(offers["price"])
-                        if "availability" in offers:
-                            in_stock = "outofstock" not in str(offers.get("availability")).lower()
+                        if isinstance(offers, dict):
+                            if price is None and offers.get("price"):
+                                price = float(offers["price"])
+                            if not stock_determined and "availability" in offers:
+                                in_stock = "outofstock" not in str(offers.get("availability")).lower()
+                                stock_determined = True
             except Exception:
                 pass
 
@@ -1491,8 +1505,10 @@ def parse_nykaa_soup(soup: BeautifulSoup, raw_html: str, url: str, pincode: Opti
         if og_img and og_img.get("content"):
             img_url = og_img.get("content")
 
-    if "out of stock" in raw_html.lower() or "sold out" in raw_html.lower():
-        in_stock = False
+    if not stock_determined:
+        visible_text = soup.get_text(" ", strip=True).lower()
+        if "currently out of stock" in visible_text or "sold out" in visible_text:
+            in_stock = False
 
     if not in_stock and price is None:
         price = 0.0
@@ -1556,6 +1572,7 @@ def parse_tira_soup(soup: BeautifulSoup, raw_html: str, url: str, pincode: Optio
     """Parse product title, price, currency, image, and item ID from Tira HTML."""
     title, price, item_id, img_url = None, None, None, None
     in_stock = True
+    stock_determined = False
 
     # 1. Check JSON-LD Product Schema
     for s in soup.find_all("script", type="application/ld+json"):
@@ -1572,6 +1589,7 @@ def parse_tira_soup(soup: BeautifulSoup, raw_html: str, url: str, pincode: Optio
                         price = float(offers["price"])
                     if "availability" in offers:
                         in_stock = "outofstock" not in str(offers.get("availability")).lower()
+                        stock_determined = True
                 img = ld.get("image")
                 if img and not img_url:
                     img_url = img[0] if isinstance(img, list) else img
@@ -1624,8 +1642,10 @@ def parse_tira_soup(soup: BeautifulSoup, raw_html: str, url: str, pincode: Optio
         if og_img and og_img.get("content"):
             img_url = og_img.get("content")
 
-    if "out of stock" in raw_html.lower() or "outofstock" in raw_html.lower() or "sold out" in raw_html.lower():
-        in_stock = False
+    if not stock_determined:
+        visible_text = soup.get_text(" ", strip=True).lower()
+        if "currently out of stock" in visible_text or "sold out" in visible_text:
+            in_stock = False
 
     if not in_stock and price is None:
         price = 0.0
@@ -1753,6 +1773,11 @@ def fetch_meesho_product(url: str, pincode: Optional[str] = None) -> Optional[Di
 
     if not title or title.strip() in ["S", "P", ""]:
         title = f"Meesho Product #{item_id}"
+
+    # Prevent silently tracking an in-stock Meesho item at ₹0.00 when Akamai/WAF blocks price extraction
+    if in_stock and (price is None or price <= 0):
+        logger.warning(f"Could not extract a valid live price for Meesho item {item_id} (blocked by WAF/bot gate).")
+        return None
 
     return {
         "platform": "Meesho",

@@ -10,6 +10,7 @@ and persistent database caching across restarts.
 import os
 import re
 import html
+import hashlib
 import random
 import asyncio
 import logging
@@ -39,6 +40,7 @@ import product_service
 load_dotenv()
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", 5400))
+RESTOCK_ONLY_TARGET = 999999999.0
 
 # Setup Logging
 logging.basicConfig(
@@ -77,11 +79,45 @@ def clean_price_input(price_str: str) -> float:
     return val
 
 
+def is_restock_only(target_price: float) -> bool:
+    """Return True if a tracked item is a Back-in-Stock-only alert (no target price)."""
+    return target_price >= 999999000.0
+
+
+def make_callback_key(item_id: str) -> str:
+    """Ensure callback item key fits comfortably within Telegram's 64-byte callback_data limit."""
+    if len(item_id.encode("utf-8")) <= 36:
+        return item_id
+    return "h" + hashlib.sha1(item_id.encode("utf-8")).hexdigest()[:15]
+
+
 def safe_caption(text: str, max_len: int = 1000) -> str:
-    """Ensure caption fits within Telegram's length limits."""
-    if len(text) > max_len:
-        return text[:max_len - 3] + "..."
-    return text
+    """Ensure HTML caption fits within Telegram's 1024-char limit without breaking HTML tags."""
+    if len(text) <= max_len:
+        return text
+
+    # Reserve room for ellipsis + closing tags
+    truncated = text[:max_len - 25]
+    # Remove any incomplete HTML tag (<...) or HTML entity (&...) at the cut boundary
+    truncated = re.sub(r"<[^>]*$", "", truncated)
+    truncated = re.sub(r"&[a-zA-Z0-9#]*$", "", truncated)
+    truncated = truncated.rstrip() + "..."
+
+    # Track unclosed Telegram HTML tags and close them in LIFO order
+    open_tags: list[str] = []
+    for m in re.finditer(r"<(/?)([a-zA-Z]+)(?:\s[^>]*)?>", truncated):
+        is_close, tag = bool(m.group(1)), m.group(2).lower()
+        if tag not in ("b", "i", "u", "s", "code", "pre", "a"):
+            continue
+        if not is_close:
+            open_tags.append(tag)
+        elif open_tags and open_tags[-1] == tag:
+            open_tags.pop()
+
+    for tag in reversed(open_tags):
+        truncated += f"</{tag}>"
+
+    return truncated
 
 
 def format_offers_block(offers: list | None, max_items: int = 3) -> str:
@@ -697,7 +733,10 @@ async def handle_url_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
 
     # Persist pending product in SQLite database so button clicks survive bot restarts!
+    cb_id = make_callback_key(product["item_id"])
     database.save_pending_product(product)
+    if cb_id != product["item_id"]:
+        database.save_pending_product({**product, "item_id": cb_id})
 
     in_stock = product.get("in_stock", True)
     curr_price = product.get("price") or 0.0
@@ -705,11 +744,11 @@ async def handle_url_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     title_escaped = html.escape(product["title"][:75])
     badge_escaped = html.escape(product.get("platform_badge", platform))
+    url_escaped = html.escape(product["url"])
     offers_block = format_offers_block(product.get("offers"))
 
     # Store in memory for instant access
-    cache_key = f"prod_{product['item_id']}"
-    context.user_data[cache_key] = product
+    context.user_data[f"prod_{cb_id}"] = product
 
     if not in_stock:
         caption = (
@@ -718,11 +757,11 @@ async def handle_url_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
             f"❌ <b>Stock Status:</b> <code>Currently Out of Stock</code>\n"
             f"📍 <b>Delivery PIN:</b> <code>{user_pin}</code> (Change with <code>/pincode</code>)\n"
             f"{offers_block}\n"
-            f"🔔 This item is currently unavailable. Click below to get an instant <b>Back-in-Stock Restock Alert</b> the moment it's available, or track a target price with <code>/track {product['url']} &lt;price&gt;</code>."
+            f"🔔 This item is currently unavailable. Click below to get an instant <b>Back-in-Stock Restock Alert</b> the moment it's available, or track a target price with <code>/track {url_escaped} &lt;price&gt;</code>."
         )
         keyboard = [
             [
-                InlineKeyboardButton("🔔 Notify when Back in Stock", callback_data=f"restock_{product['item_id']}"),
+                InlineKeyboardButton("🔔 Notify when Back in Stock", callback_data=f"restock_{cb_id}"),
             ],
             [
                 InlineKeyboardButton(f"🛒 View on {product['platform']}", url=product["url"]),
@@ -739,15 +778,15 @@ async def handle_url_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
             f"💰 <b>Current Price:</b> <code>{currency}{curr_price:,.2f}</code>\n"
             f"📍 <b>Delivery PIN:</b> <code>{user_pin}</code> (Change with <code>/pincode</code>)\n"
             f"{offers_block}\n"
-            f"🎯 <b>Select your desired price drop below:</b> or reply with <code>/track {product['url']} &lt;price&gt;</code>"
+            f"🎯 <b>Select your desired price drop below:</b> or reply with <code>/track {url_escaped} &lt;price&gt;</code>"
         )
         keyboard = [
             [
-                InlineKeyboardButton(f"🔔 5% Drop ({currency}{p5:,.0f})", callback_data=f"set_{product['item_id']}_{p5}"),
-                InlineKeyboardButton(f"🔔 10% Drop ({currency}{p10:,.0f})", callback_data=f"set_{product['item_id']}_{p10}"),
+                InlineKeyboardButton(f"🔔 5% Drop ({currency}{p5:,.0f})", callback_data=f"set_{cb_id}_{p5}"),
+                InlineKeyboardButton(f"🔔 10% Drop ({currency}{p10:,.0f})", callback_data=f"set_{cb_id}_{p10}"),
             ],
             [
-                InlineKeyboardButton(f"🔥 15% Drop ({currency}{p15:,.0f})", callback_data=f"set_{product['item_id']}_{p15}"),
+                InlineKeyboardButton(f"🔥 15% Drop ({currency}{p15:,.0f})", callback_data=f"set_{cb_id}_{p15}"),
                 InlineKeyboardButton(f"🛒 View on {product['platform']}", url=product["url"]),
             ]
         ]
@@ -785,14 +824,14 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     data = query.data
 
     if data.startswith("restock_"):
-        item_id = data.split("_")[1]
+        item_id = data[len("restock_"):]
         product = context.user_data.get(f"prod_{item_id}") or database.get_pending_product(item_id)
         if not product:
             await query.message.reply_text("❌ Session expired. Please re-paste the product link.")
             return
 
         user_pin = database.get_user_pincode(query.from_user.id)
-        # Add to tracked products with ceiling price and is_in_stock=False
+        # Add to tracked products with restock-only sentinel and is_in_stock=False
         product_id = database.add_tracked_product(
             user_id=query.from_user.id,
             chat_id=query.message.chat_id,
@@ -801,7 +840,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             title=product["title"],
             url=product["url"],
             image_url=product.get("image_url"),
-            target_price=999999999.0,
+            target_price=RESTOCK_ONLY_TARGET,
             current_price=product.get("price") or 0.0,
             currency=product.get("currency", "₹"),
             pincode=user_pin,
@@ -847,9 +886,13 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 await query.message.reply_text(confirm, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
 
     elif data.startswith("set_"):
-        parts = data.split("_")
-        item_id = parts[1]
-        target_price = float(parts[2])
+        rest = data[len("set_"):]
+        try:
+            item_id, price_str = rest.rsplit("_", 1)
+            target_price = float(price_str)
+        except ValueError:
+            await query.message.reply_text("❌ Invalid button payload. Please re-paste the product link.")
+            return
 
         # Look in memory first, then fallback to database pending_products (survives restarts!)
         product = context.user_data.get(f"prod_{item_id}") or database.get_pending_product(item_id)
@@ -1116,13 +1159,19 @@ async def check_prices_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                     database.update_product_stock_status(product_id, is_in_stock=True, current_price=new_price)
                     logger.info(f"Restock Alert: #{product_id} on {platform} is BACK IN STOCK (Price: {new_price})")
 
+                    restock_only = is_restock_only(target_price)
+                    target_line = (
+                        "🎯 <b>Alert Type:</b> <code>Back-in-Stock Restock Alert</code>"
+                        if restock_only
+                        else f"🎯 <b>Your Target Price:</b> <code>{currency}{target_price:,.2f}</code>"
+                    )
                     restock_text = (
                         f"🟢🎉 <b>{badge_escaped} BACK IN STOCK ALERT!</b> 🎉🟢\n"
                         f"━━━━━━━━━━━━━━━━━━━\n"
                         f"📦 <b>{title_escaped}...</b>\n\n"
                         f"✅ <b>Hooray! This item is now available to order!</b>\n"
                         f"💰 <b>Live Price:</b> <code>{currency}{new_price:,.2f}</code>\n"
-                        f"🎯 <b>Your Target Price:</b> <code>{currency}{target_price:,.2f}</code>\n"
+                        f"{target_line}\n"
                         f"📍 <b>Delivery PIN:</b> <code>{pin}</code>\n"
                         f"{offers_block}"
                         f"━━━━━━━━━━━━━━━━━━━\n"
@@ -1137,8 +1186,9 @@ async def check_prices_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                     if not sent:
                         break
 
-                    # If target reached as well, mark triggered
-                    if new_price > 0 and target_price < 999999000 and new_price <= target_price:
+                    # Mark triggered for restock-only alerts (prevents bogus price-drop alert on next cycle)
+                    # or if user's real target price is already met
+                    if restock_only or (new_price > 0 and new_price <= target_price):
                         database.mark_product_triggered(product_id, new_price)
 
                     await asyncio.sleep(0.5)
@@ -1153,7 +1203,7 @@ async def check_prices_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                 # ====================================================
                 # Case 4: Item In Stock - Normal Price Check
                 # ====================================================
-                if new_price <= 0:
+                if new_price <= 0 or is_restock_only(target_price):
                     continue
 
                 database.update_product_price(product_id, new_price)
