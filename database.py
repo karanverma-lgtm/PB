@@ -9,6 +9,7 @@ Supports:
 
 import sqlite3
 import os
+import json
 from typing import List, Dict, Any, Optional
 
 # Configurable DB path for cloud deployment persistence (e.g. Railway Volume mounted at /data)
@@ -91,6 +92,7 @@ def init_db() -> None:
                 url TEXT NOT NULL,
                 image_url TEXT,
                 is_in_stock INTEGER DEFAULT 1,
+                offers TEXT DEFAULT '[]',
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
             """
@@ -132,6 +134,12 @@ def init_db() -> None:
             except Exception:
                 pass
 
+        if "offers" not in pending_columns:
+            try:
+                cursor.execute("ALTER TABLE pending_products ADD COLUMN offers TEXT DEFAULT '[]'")
+            except Exception:
+                pass
+
         cursor.execute(
             "CREATE INDEX IF NOT EXISTS idx_products_active ON tracked_products (is_active)"
         )
@@ -149,14 +157,15 @@ def save_pending_product(product: Dict[str, Any]) -> None:
         return
     try:
         is_in_stock = 1 if product.get("in_stock", True) else 0
+        offers_json = json.dumps(product.get("offers") or [], ensure_ascii=False)
         with get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """
                 INSERT INTO pending_products (
-                    item_id, platform, platform_badge, title, price, currency, url, image_url, is_in_stock, updated_at
+                    item_id, platform, platform_badge, title, price, currency, url, image_url, is_in_stock, offers, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ON CONFLICT(item_id) DO UPDATE SET
                     platform = excluded.platform,
                     platform_badge = excluded.platform_badge,
@@ -166,6 +175,7 @@ def save_pending_product(product: Dict[str, Any]) -> None:
                     url = excluded.url,
                     image_url = excluded.image_url,
                     is_in_stock = excluded.is_in_stock,
+                    offers = excluded.offers,
                     updated_at = CURRENT_TIMESTAMP
                 """,
                 (
@@ -178,6 +188,7 @@ def save_pending_product(product: Dict[str, Any]) -> None:
                     product["url"],
                     product.get("image_url"),
                     is_in_stock,
+                    offers_json,
                 ),
             )
             conn.commit()
@@ -192,7 +203,9 @@ def get_pending_product(item_id: str) -> Optional[Dict[str, Any]]:
             cursor = conn.cursor()
             cursor.execute(
                 """
-                SELECT item_id, platform, platform_badge, title, price, currency, url, image_url, COALESCE(is_in_stock, 1) AS is_in_stock
+                SELECT item_id, platform, platform_badge, title, price, currency, url, image_url,
+                       COALESCE(is_in_stock, 1) AS is_in_stock,
+                       COALESCE(offers, '[]') AS offers
                 FROM pending_products
                 WHERE item_id = ?
                 """,
@@ -202,6 +215,11 @@ def get_pending_product(item_id: str) -> Optional[Dict[str, Any]]:
             if row:
                 res = dict(row)
                 res["in_stock"] = bool(res.get("is_in_stock", 1))
+                try:
+                    parsed_offers = json.loads(res.get("offers") or "[]")
+                    res["offers"] = parsed_offers if isinstance(parsed_offers, list) else []
+                except Exception:
+                    res["offers"] = []
                 return res
             return None
     except Exception:

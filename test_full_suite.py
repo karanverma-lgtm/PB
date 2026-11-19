@@ -74,12 +74,15 @@ def run_tests():
         assert prod["currency"] in ["₹", "$"], f"Unexpected currency {prod['currency']}"
         assert "in_stock" in prod and isinstance(prod["in_stock"], bool), "Missing or invalid in_stock status"
         assert "price" in prod and prod["price"] >= 0, f"Invalid price {prod['price']}"
+        assert "offers" in prod and isinstance(prod["offers"], list), "Missing or invalid offers list"
 
         print(f"  ✅ {prod['platform_badge']} ({prod['platform']})")
         print(f"     Title: {prod['title'][:55]}...")
         print(f"     Price: {prod['currency']}{prod['price']:,.2f}")
         print(f"     Stock: {'🟢 In Stock' if prod['in_stock'] else '❌ Out of Stock'}")
         print(f"     Item ID: {prod['item_id']}")
+        if prod["offers"]:
+            print(f"     Offers ({len(prod['offers'])}): {prod['offers'][0][:75]}")
         fetched_products.append(prod)
 
     # 3. Stock Status & Availability Parsing Unit Tests
@@ -100,6 +103,56 @@ def run_tests():
     assert fk_parsed["in_stock"] is False, f"Expected in_stock=False, got {fk_parsed['in_stock']}"
     print("  ✅ Flipkart Out-of-Stock detected correctly from 'NOTIFY ME' / 'CURRENTLY OUT OF STOCK'.")
 
+    # 3b. Bank / Credit Card / Coupon Offer Extraction Unit Tests
+    print("\n💳 3b. Offer & Credit Card Discount Extraction Tests:")
+    import bot
+
+    amz_offer_html = """
+    <html><body>
+      <span id="productTitle">Apple iPhone 15</span>
+      <span class="a-price-whole">59,900</span>
+      <span id="couponBadgeRegularVpc">Apply ₹1,000 coupon Terms</span>
+      <div id="itembox-InstantBankDiscount">
+        <span class="offers-items-title">Bank Offer</span>
+        <span class="offers-items-content">Upto ₹1,849.75 discount on Axis Bank Credit Cards 1 offer</span>
+      </div>
+      <div id="itembox-GCCashback">
+        <span class="offers-items-title">Cashback</span>
+        <span class="offers-items-content">Upto ₹2,219.00 cashback on Amazon Pay ICICI Credit Cards</span>
+      </div>
+    </body></html>
+    """
+    amz_offers = product_service.extract_amazon_offers(BeautifulSoup(amz_offer_html, "html.parser"))
+    assert len(amz_offers) == 3, f"Expected 3 Amazon offers, got {amz_offers}"
+    assert "Axis Bank Credit Cards" in amz_offers[1] and "1 offer" not in amz_offers[1], f"Unexpected Amazon bank offer: {amz_offers[1]}"
+    print(f"  ✅ Amazon offer extraction verified ({len(amz_offers)} offers: coupon, bank, cashback).")
+
+    fk_offer_html = (
+        '<html><body><script>{"type":"NepOffers","offerTitle":"Flipkart Axis","offerSubTitleRC":{"value":{"contentList":[{"contentValue":"Credit Card"}]}},"discountedPriceText":"₹2,995 off"}'
+        '{"type":"NepOffers","offerTitle":"Flipkart SBI","offerSubTitleRC":{"value":{"contentList":[{"contentValue":"Credit Card"}]}},"discountedPriceText":"₹2,995 off"}'
+        '{"type":"NepOffers","offerTitle":"Zero Placeholder","discountedPriceText":"₹0 off"}</script></body></html>'
+    )
+    fk_offers = product_service.extract_flipkart_offers(BeautifulSoup(fk_offer_html, "html.parser"), fk_offer_html)
+    assert len(fk_offers) == 2, f"Expected 2 Flipkart offers, got {fk_offers}"
+    assert "Flipkart Axis (Credit Card): ₹2,995 off" == fk_offers[0], f"Unexpected Flipkart offer: {fk_offers[0]}"
+    print(f"  ✅ Flipkart NepOffers extraction verified ({len(fk_offers)} bank/card offers).")
+
+    croma_pdp = {
+        "discount": "12%",
+        "storeoffer": [
+            {"toDate": "2024-04-27T11:59:00+0530", "storeOfferLabel": "Expired Offer"},
+            {"toDate": "2029-12-31T23:59:09+0530", "storeOfferLabel": "Note:", "productLabel": "<html>Bulk purchase disclaimer</html>"},
+            {"toDate": "2029-12-31T23:59:09+0530", "storeOfferLabel": "HDFC Credit Card Instant ₹3,000 Off"},
+        ],
+    }
+    croma_offers = product_service.extract_croma_offers(croma_pdp)
+    assert len(croma_offers) == 2 and "HDFC Credit Card Instant ₹3,000 Off" in croma_offers, f"Unexpected Croma offers: {croma_offers}"
+    print(f"  ✅ Croma offer filtering verified (expired & disclaimer notes excluded).")
+
+    formatted_block = bot.format_offers_block(amz_offers)
+    assert "💳 <b>Available Offers:</b>" in formatted_block and "Axis Bank Credit Cards" in formatted_block
+    print("  ✅ Telegram HTML offer block formatting verified.")
+
     # 4. Database Integration Test
     print("\n💾 4. Database Integration & Stock Transition Tests:")
     database.init_db()
@@ -112,14 +165,16 @@ def run_tests():
     assert user_pin == "560001", f"Expected pincode 560001, got {user_pin}"
     print("  ✅ User delivery PIN code storage & retrieval verified (560001).")
 
-    # Test pending product caching across restarts with in_stock
-    sample_prod = fetched_products[0]
+    # Test pending product caching across restarts with in_stock and offers
+    sample_prod = dict(fetched_products[0])
+    sample_prod["offers"] = ["Bank Offer: ₹1,500 off on HDFC Credit Card"]
     database.save_pending_product(sample_prod)
     cached = database.get_pending_product(sample_prod["item_id"])
     assert cached is not None, "Pending product was not saved"
     assert cached["item_id"] == sample_prod["item_id"], "Mismatch in pending product item_id"
     assert "in_stock" in cached and isinstance(cached["in_stock"], bool), "Missing in_stock in cached pending product"
-    print("  ✅ Pending product caching with stock status verified (survives bot restarts).")
+    assert cached.get("offers") == sample_prod["offers"], f"Pending offers not persisted: {cached.get('offers')}"
+    print("  ✅ Pending product caching with stock status & offers verified (survives bot restarts).")
 
     inserted_ids = []
     for prod in fetched_products:

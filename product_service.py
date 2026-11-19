@@ -22,6 +22,7 @@ import time
 import logging
 import threading
 import urllib.request
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
 from curl_cffi import requests
 from bs4 import BeautifulSoup
@@ -142,6 +143,174 @@ def detect_platform(url_or_text: str) -> str:
     if "amazon." in text or "amzn." in text or re.match(r"^[A-Z0-9]{10}$", url_or_text.strip()):
         return "Amazon"
     return "Unknown"
+
+
+# =====================================================================
+# Offer / Bank Discount / Coupon Extractors
+# =====================================================================
+
+def _dedupe_offers(offers: List[str], limit: int = 4) -> List[str]:
+    """Normalize whitespace, deduplicate offers case-insensitively, and cap list size."""
+    cleaned: List[str] = []
+    seen = set()
+    for raw in offers:
+        text = " ".join(str(raw).split()).strip(" |•-")
+        if len(text) < 6:
+            continue
+        key = text.lower()
+        if key not in seen:
+            seen.add(key)
+            cleaned.append(text)
+        if len(cleaned) >= limit:
+            break
+    return cleaned
+
+
+def extract_amazon_offers(soup: BeautifulSoup) -> List[str]:
+    """Extract Bank Offers, Cashback, No Cost EMI, Partner Offers, and Coupons from Amazon HTML."""
+    offers: List[str] = []
+
+    # 1. Clippable Amazon Coupons (e.g. "Apply ₹500 coupon")
+    for sel in ["#couponBadgeRegularVpc", ".couponLabelText", "#promoPriceBlockMessage_feature_div label"]:
+        cel = soup.select_one(sel)
+        if cel:
+            c_txt = " ".join(cel.get_text(" ", strip=True).split())
+            c_txt = re.sub(r"\bTerms\b.*$", "", c_txt, flags=re.I).strip()
+            if c_txt and len(c_txt) >= 5:
+                if "coupon" not in c_txt.lower():
+                    c_txt = f"Coupon: {c_txt}"
+                offers.append(c_txt)
+                break
+
+    # 2. Structured Offer Cards ([id^='itembox-']) in priority order
+    priority_ids = [
+        "itembox-InstantBankDiscount",
+        "itembox-GCCashback",
+        "itembox-Cashback",
+        "itembox-NoCostEmi",
+        "itembox-Partner",
+    ]
+    all_boxes = soup.select("[id^='itembox-']")
+    box_map = {el.get("id"): el for el in all_boxes if el.get("id")}
+    ordered_ids = [i for i in priority_ids if i in box_map] + [i for i in box_map if i not in priority_ids]
+
+    for bid in ordered_ids:
+        el = box_map[bid]
+        title_el = el.select_one(".offers-items-title")
+        content_el = el.select_one(".offers-items-content")
+        t_txt = " ".join(title_el.get_text(" ", strip=True).split()) if title_el else ""
+        c_txt = " ".join(content_el.get_text(" ", strip=True).split()) if content_el else ""
+
+        if not c_txt:
+            c_txt = " ".join(el.get_text(" ", strip=True).split())
+            if t_txt and c_txt.lower().startswith(t_txt.lower()):
+                c_txt = c_txt[len(t_txt):].strip(" :-")
+
+        # Strip trailing UI noise like "1 offer", "2 offers", "See more", "Details"
+        c_txt = re.sub(r"\b\d+\s+offers?\b.*$", "", c_txt, flags=re.I).strip(" .:-")
+        c_txt = re.sub(r"\b(?:See more|Details|T&C)\b.*$", "", c_txt, flags=re.I).strip(" .:-")
+
+        if c_txt and len(c_txt) >= 8:
+            if t_txt and not c_txt.lower().startswith(t_txt.lower()):
+                offers.append(f"{t_txt}: {c_txt}")
+            else:
+                offers.append(c_txt)
+
+    return _dedupe_offers(offers, limit=4)
+
+
+def extract_flipkart_offers(soup: BeautifulSoup, raw_html: str) -> List[str]:
+    """Extract Bank Offers, Credit Card Cashback, and Available Offers from Flipkart HTML/JSON."""
+    offers: List[str] = []
+    bank_summary_fallback: Optional[str] = None
+
+    # 1. Modern Flipkart ATLAS_NEP_V2 embedded JSON ("type":"NepOffers")
+    for m in re.finditer(r'"type"\s*:\s*"NepOffers"', raw_html):
+        chunk = raw_html[m.start():m.start() + 900]
+        otype_m = re.search(r'"offerType"\s*:\s*"([^"]+)"', chunk)
+        if otype_m and otype_m.group(1).upper() == "EXCHANGE":
+            continue
+
+        title_m = re.search(r'"offerTitle"\s*:\s*"([^"]+)"', chunk)
+        sub_m = re.search(r'"contentValue"\s*:\s*"([^"]+)"', chunk)
+        disc_m = re.search(r'"discountedPriceText"\s*:\s*"([^"]+)"', chunk)
+
+        if title_m and disc_m:
+            otitle = title_m.group(1).strip()
+            odisc = disc_m.group(1).strip()
+            # Ignore placeholder zero discounts
+            if re.search(r"₹\s*0\b", odisc):
+                continue
+            osub = sub_m.group(1).strip() if sub_m else ""
+            if osub and osub.lower() not in otitle.lower():
+                offers.append(f"{otitle} ({osub}): {odisc}")
+            else:
+                offers.append(f"{otitle}: {odisc}")
+        elif not bank_summary_fallback:
+            meta_k = re.search(r'"metaInfoLabelKey"\s*:\s*"([^"]*Bank offer[^"]*)"', chunk, re.I)
+            meta_v = re.search(r'"metaInfoLabelValue"\s*:\s*"([^"]+)"', chunk)
+            if meta_k and meta_v and not re.search(r"₹\s*0\b", meta_v.group(1)):
+                bank_summary_fallback = f"{meta_k.group(1).strip()}: {meta_v.group(1).strip()}"
+
+    if not offers and bank_summary_fallback:
+        offers.append(bank_summary_fallback)
+
+    # 2. Classic Flipkart Desktop DOM ("Available offers" list)
+    if not offers:
+        avail_node = soup.find(string=re.compile(r"Available offers", re.I))
+        if avail_node and avail_node.parent:
+            container = avail_node.parent.parent or avail_node.parent
+            for li in container.find_all("li")[:6]:
+                txt = " ".join(li.get_text(" ", strip=True).split())
+                txt = re.sub(r"\b(?:T&C|View Plans|Know More)\b.*$", "", txt, flags=re.I).strip(" .:-")
+                if len(txt) >= 12:
+                    offers.append(txt)
+
+    return _dedupe_offers(offers, limit=4)
+
+
+def extract_croma_offers(pdp_data: Dict[str, Any]) -> List[str]:
+    """Extract active non-disclaimer store/exchange offers and discount badges from Croma pdpData."""
+    offers: List[str] = []
+    now = datetime.now(timezone.utc)
+
+    for item in pdp_data.get("storeoffer", []) or []:
+        if not isinstance(item, dict):
+            continue
+        # Skip expired offers
+        to_date_str = item.get("toDate")
+        if to_date_str:
+            try:
+                dt = datetime.fromisoformat(str(to_date_str))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                if dt < now:
+                    continue
+            except Exception:
+                pass
+
+        label = " ".join(str(item.get("storeOfferLabel") or "").split()).strip()
+        prod_label_raw = str(item.get("productLabel") or "")
+        prod_label = " ".join(BeautifulSoup(prod_label_raw, "html.parser").get_text(" ", strip=True).split()) if prod_label_raw else ""
+
+        combined_lower = f"{label} {prod_label}".lower()
+        # Skip generic legal/bulk-order policy notes
+        if label.lower().startswith("note") or any(w in combined_lower for w in ["re-selling", "bulk purchase", "reserve the right to cancel"]):
+            continue
+
+        if label and prod_label and prod_label.lower() not in label.lower() and len(prod_label) <= 120:
+            offers.append(f"{label}: {prod_label}")
+        elif label and len(label) >= 8:
+            offers.append(label)
+
+    discount_val = pdp_data.get("discount")
+    if discount_val and str(discount_val).strip() not in ("0", "0%", "None", ""):
+        d_str = str(discount_val).strip()
+        if "off" not in d_str.lower():
+            d_str = f"{d_str} OFF"
+        offers.append(f"Store Discount: {d_str}")
+
+    return _dedupe_offers(offers, limit=4)
 
 
 # =====================================================================
@@ -370,6 +539,8 @@ def parse_amazon_soup(soup: BeautifulSoup, asin: str, canonical_url: str, pincod
         if og_img and og_img.get("content"):
             img_url = og_img.get("content")
 
+    offers = extract_amazon_offers(soup)
+
     return {
         "platform": "Amazon",
         "platform_badge": "📦 Amazon",
@@ -381,6 +552,7 @@ def parse_amazon_soup(soup: BeautifulSoup, asin: str, canonical_url: str, pincod
         "image_url": img_url,
         "pincode": str(pincode or "110001"),
         "in_stock": is_in_stock,
+        "offers": offers,
     }
 
 
@@ -630,6 +802,7 @@ def parse_flipkart_soup(soup: BeautifulSoup, url: str, pincode: Optional[str] = 
             img_url = og_img.get("content")
 
     item_id = extract_flipkart_id(url)
+    offers = extract_flipkart_offers(soup, soup_str)
 
     return {
         "platform": "Flipkart",
@@ -642,6 +815,7 @@ def parse_flipkart_soup(soup: BeautifulSoup, url: str, pincode: Optional[str] = 
         "image_url": img_url,
         "pincode": str(pincode or "110001"),
         "in_stock": is_in_stock,
+        "offers": offers,
     }
 
 
@@ -807,6 +981,7 @@ def fetch_reliancedigital_product(url: str, pincode: Optional[str] = None) -> Op
             return None
 
         title, price, img_url, item_id = None, None, None, None
+        offers: List[str] = []
 
         idx = res.text.find("window.__INITIAL_STATE__")
         if idx != -1:
@@ -839,6 +1014,9 @@ def fetch_reliancedigital_product(url: str, pincode: Optional[str] = None) -> Op
                     eff = meta_price.get("effective", {}) or meta_price.get("selling", {}) or meta_price.get("marked", {})
                     if eff and "min" in eff:
                         price = float(eff["min"])
+                meta_disc = pdp.get("product_meta", {}).get("discount")
+                if meta_disc and str(meta_disc).strip() not in ("0", "0%", "None", ""):
+                    offers.append(f"MRP Discount: {str(meta_disc).strip()}")
 
         # Fallbacks
         if not item_id:
@@ -878,6 +1056,7 @@ def fetch_reliancedigital_product(url: str, pincode: Optional[str] = None) -> Op
             "image_url": img_url,
             "pincode": str(pincode or "110001"),
             "in_stock": is_in_stock,
+            "offers": offers,
         }
     except Exception as e:
         logger.error(f"Error scraping Reliance Digital: {e}")
@@ -899,6 +1078,7 @@ def fetch_croma_product(url: str, pincode: Optional[str] = None) -> Optional[Dic
             return None
 
         title, price, img_url, item_id = None, None, None, None
+        offers: List[str] = []
 
         idx = res.text.find("window.__INITIAL_DATA__=")
         if idx != -1:
@@ -925,6 +1105,7 @@ def fetch_croma_product(url: str, pincode: Optional[str] = None) -> Optional[Dic
                 images = pdp.get("imageInfo", [])
                 if images:
                     img_url = images[0].get("url")
+                offers = extract_croma_offers(pdp)
 
                 price_data = d.get("pdpPriceReducer", {}).get("pdpPriceData", {})
                 sp = price_data.get("sellingPrice", {}).get("value") or price_data.get("mrp", {}).get("value")
@@ -963,6 +1144,7 @@ def fetch_croma_product(url: str, pincode: Optional[str] = None) -> Optional[Dic
             "image_url": img_url,
             "pincode": str(pincode or "110001"),
             "in_stock": is_in_stock,
+            "offers": offers,
         }
     except Exception as e:
         logger.error(f"Error scraping Croma: {e}")
@@ -1710,28 +1892,23 @@ def fetch_product(url_or_text: str, pincode: Optional[str] = None) -> Optional[D
     clean_target = clean_url_from_text(url_or_text)
     platform = detect_platform(clean_target)
 
-    if platform == "RelianceDigital":
-        return fetch_reliancedigital_product(clean_target, pincode=pincode)
-    elif platform == "Croma":
-        return fetch_croma_product(clean_target, pincode=pincode)
-    elif platform == "JioMart":
-        return fetch_jiomart_product(clean_target, pincode=pincode)
-    elif platform == "Samsung":
-        return fetch_samsung_product(clean_target, pincode=pincode)
-    elif platform == "Flipkart":
-        return fetch_flipkart_product(clean_target, pincode=pincode)
-    elif platform == "Amazon":
-        return fetch_amazon_product(clean_target, pincode=pincode)
-    elif platform == "Myntra":
-        return fetch_myntra_product(clean_target, pincode=pincode)
-    elif platform == "Nykaa":
-        return fetch_nykaa_product(clean_target, pincode=pincode)
-    elif platform == "Tira":
-        return fetch_tira_product(clean_target, pincode=pincode)
-    elif platform == "Meesho":
-        return fetch_meesho_product(clean_target, pincode=pincode)
-    elif platform == "Savana":
-        return fetch_savana_product(clean_target, pincode=pincode)
+    dispatch = {
+        "RelianceDigital": fetch_reliancedigital_product,
+        "Croma": fetch_croma_product,
+        "JioMart": fetch_jiomart_product,
+        "Samsung": fetch_samsung_product,
+        "Flipkart": fetch_flipkart_product,
+        "Amazon": fetch_amazon_product,
+        "Myntra": fetch_myntra_product,
+        "Nykaa": fetch_nykaa_product,
+        "Tira": fetch_tira_product,
+        "Meesho": fetch_meesho_product,
+        "Savana": fetch_savana_product,
+    }
+
+    res: Optional[Dict[str, Any]] = None
+    if platform in dispatch:
+        res = dispatch[platform](clean_target, pincode=pincode)
     else:
         # Fallback cascade across supported platforms
         for fetcher in [
@@ -1749,5 +1926,8 @@ def fetch_product(url_or_text: str, pincode: Optional[str] = None) -> Optional[D
         ]:
             res = fetcher(clean_target, pincode=pincode)
             if res:
-                return res
-        return None
+                break
+
+    if res is not None:
+        res.setdefault("offers", [])
+    return res

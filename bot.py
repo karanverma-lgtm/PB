@@ -84,6 +84,23 @@ def safe_caption(text: str, max_len: int = 1000) -> str:
     return text
 
 
+def format_offers_block(offers: list | None, max_items: int = 3) -> str:
+    """Format scraped bank/card/coupon offers as a compact HTML block for Telegram messages."""
+    if not offers:
+        return ""
+    lines = []
+    for raw in offers[:max_items]:
+        txt = " ".join(str(raw).split()).strip()
+        if not txt:
+            continue
+        if len(txt) > 95:
+            txt = txt[:92].rstrip() + "..."
+        lines.append(f"• {html.escape(txt)}")
+    if not lines:
+        return ""
+    return "\n💳 <b>Available Offers:</b>\n" + "\n".join(lines) + "\n"
+
+
 # ---------------------------------------------------------
 # Command Handlers
 # ---------------------------------------------------------
@@ -323,6 +340,7 @@ async def track_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     title_escaped = html.escape(product["title"][:75])
     badge_escaped = html.escape(product.get("platform_badge", platform))
+    offers_block = format_offers_block(product.get("offers"))
 
     user_prods = database.get_user_products(user.id)
     item_num = next((i for i, item in enumerate(user_prods, 1) if item["id"] == product_id), len(user_prods))
@@ -349,6 +367,7 @@ async def track_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             f"🎯 <b>Target Price:</b> <code>{currency}{target_price:,.2f}</code>\n"
             f"📉 <b>Target Savings:</b> <code>{currency}{savings:,.2f} ({savings_pct:.1f}% OFF)</code>\n"
             f"📍 <b>Delivery PIN:</b> <code>{user_pin}</code>\n"
+            f"{offers_block}"
             f"━━━━━━━━━━━━━━━━━━━\n"
             f"🔔 I am actively monitoring this item and will alert you the moment the price drops!"
         )
@@ -561,6 +580,7 @@ async def handle_url_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     title_escaped = html.escape(product["title"][:75])
     badge_escaped = html.escape(product.get("platform_badge", platform))
+    offers_block = format_offers_block(product.get("offers"))
 
     # Store in memory for instant access
     cache_key = f"prod_{product['item_id']}"
@@ -571,7 +591,8 @@ async def handle_url_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
             f"{badge_escaped} <b>{title_escaped}...</b>\n"
             f"━━━━━━━━━━━━━━━━━━━\n"
             f"❌ <b>Stock Status:</b> <code>Currently Out of Stock</code>\n"
-            f"📍 <b>Delivery PIN:</b> <code>{user_pin}</code> (Change with <code>/pincode</code>)\n\n"
+            f"📍 <b>Delivery PIN:</b> <code>{user_pin}</code> (Change with <code>/pincode</code>)\n"
+            f"{offers_block}\n"
             f"🔔 This item is currently unavailable. Click below to get an instant <b>Back-in-Stock Restock Alert</b> the moment it's available, or track a target price with <code>/track {product['url']} &lt;price&gt;</code>."
         )
         keyboard = [
@@ -591,7 +612,8 @@ async def handle_url_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
             f"{badge_escaped} <b>{title_escaped}...</b>\n"
             f"━━━━━━━━━━━━━━━━━━━\n"
             f"💰 <b>Current Price:</b> <code>{currency}{curr_price:,.2f}</code>\n"
-            f"📍 <b>Delivery PIN:</b> <code>{user_pin}</code> (Change with <code>/pincode</code>)\n\n"
+            f"📍 <b>Delivery PIN:</b> <code>{user_pin}</code> (Change with <code>/pincode</code>)\n"
+            f"{offers_block}\n"
             f"🎯 <b>Select your desired price drop below:</b> or reply with <code>/track {product['url']} &lt;price&gt;</code>"
         )
         keyboard = [
@@ -906,6 +928,7 @@ async def check_prices_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 
                 title_escaped = html.escape(title[:75])
                 badge_escaped = html.escape(badge)
+                offers_block = format_offers_block(prod_data.get("offers"))
 
                 # ====================================================
                 # Case 1: In-Stock -> Out-of-Stock (OOS) Transition
@@ -949,6 +972,7 @@ async def check_prices_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                         f"💰 <b>Live Price:</b> <code>{currency}{new_price:,.2f}</code>\n"
                         f"🎯 <b>Your Target Price:</b> <code>{currency}{target_price:,.2f}</code>\n"
                         f"📍 <b>Delivery PIN:</b> <code>{pin}</code>\n"
+                        f"{offers_block}"
                         f"━━━━━━━━━━━━━━━━━━━\n"
                         f"⚡ Hurry! Grab it before it sells out again."
                     )
@@ -1012,6 +1036,7 @@ async def check_prices_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                         f"🎯 <b>Your Target:</b> <code>{currency}{target_price:,.2f}</code>\n"
                         f"💰 <b>You Save:</b> <code>{currency}{savings:,.2f} ({savings_pct:.1f}% OFF)</code>\n"
                         f"📍 <b>Delivery PIN:</b> <code>{pin}</code>\n"
+                        f"{offers_block}"
                         f"━━━━━━━━━━━━━━━━━━━\n"
                         f"⚡ Target price reached! Click below to buy or stop tracking."
                     )
