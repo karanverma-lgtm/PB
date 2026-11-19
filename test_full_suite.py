@@ -151,7 +151,17 @@ def run_tests():
 
     formatted_block = bot.format_offers_block(amz_offers)
     assert "💳 <b>Available Offers:</b>" in formatted_block and "Axis Bank Credit Cards" in formatted_block
-    print("  ✅ Telegram HTML offer block formatting verified.")
+    msg_with, kb_with = bot.build_offers_message(
+        {"platform": "Amazon", "platform_badge": "📦 Amazon", "title": "Apple iPhone 15", "price": 59900.0, "currency": "₹", "url": "https://www.amazon.in/dp/B0CHX2F5QT", "in_stock": True, "offers": amz_offers},
+        "110001",
+    )
+    assert "Available Bank & Card Offers (3)" in msg_with and kb_with is not None
+    msg_empty, _ = bot.build_offers_message(
+        {"platform": "Savana", "platform_badge": "👗 Savana", "title": "Retro Sunglasses", "price": 390.0, "currency": "₹", "url": "https://in.savana.com/details/1955712", "in_stock": True, "offers": []},
+        "110001",
+    )
+    assert "No bank, credit card, or coupon offers" in msg_empty
+    print("  ✅ Telegram HTML offer block & /offers command formatting verified.")
 
     # 4. Database Integration Test
     print("\n💾 4. Database Integration & Stock Transition Tests:")

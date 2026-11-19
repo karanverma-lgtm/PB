@@ -101,6 +101,47 @@ def format_offers_block(offers: list | None, max_items: int = 3) -> str:
     return "\n💳 <b>Available Offers:</b>\n" + "\n".join(lines) + "\n"
 
 
+def build_offers_message(product: dict, user_pin: str) -> tuple[str, InlineKeyboardMarkup]:
+    """Build detailed live offers message and action keyboard for /offers command & inline button."""
+    platform = product.get("platform", "Store")
+    badge_escaped = html.escape(product.get("platform_badge", platform))
+    title_escaped = html.escape(product["title"][:85])
+    currency = product.get("currency", "₹")
+    curr_price = product.get("price") or 0.0
+    in_stock = product.get("in_stock", True)
+    offers = product.get("offers") or []
+
+    price_line = (
+        f"💰 <b>Live Price:</b> <code>{currency}{curr_price:,.2f}</code>"
+        if in_stock
+        else "❌ <b>Stock Status:</b> <code>Currently Out of Stock</code>"
+    )
+
+    if offers:
+        offer_lines = "\n".join(
+            f"• {html.escape(' '.join(str(o).split())[:180])}" for o in offers[:6]
+        )
+        offers_section = f"\n💳 <b>Available Bank & Card Offers ({len(offers)}):</b>\n{offer_lines}"
+    else:
+        offers_section = (
+            "\nℹ️ <i>No bank, credit card, or coupon offers are currently listed on this product page "
+            "(some platforms load offers only at checkout).</i>"
+        )
+
+    text = (
+        f"{badge_escaped} <b>{title_escaped}...</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"{price_line}\n"
+        f"📍 <b>Delivery PIN:</b> <code>{user_pin}</code>\n"
+        f"{offers_section}\n"
+        f"━━━━━━━━━━━━━━━━━━━"
+    )
+    keyboard = [
+        [InlineKeyboardButton(f"🛒 View on {platform}", url=product["url"])]
+    ]
+    return text, InlineKeyboardMarkup(keyboard)
+
+
 # ---------------------------------------------------------
 # Command Handlers
 # ---------------------------------------------------------
@@ -135,7 +176,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "• <code>/track &lt;URL&gt; &lt;DESIRED_PRICE&gt;</code> — Track product with target price\n"
         "• <code>/pincode &lt;6-DIGIT-PIN&gt;</code> — Set delivery PIN for local price & stock\n"
         "• <code>/products</code> — View and manage all your tracked items\n"
-        "• <code>/deltrack &lt;ID&gt;</code> — Stop tracking a product\n"
+        "• <code>/offers &lt;NUM or URL&gt;</code> — Check live bank, card & coupon offers\n"
+        "• <code>/deltrack &lt;NUM&gt;</code> — Stop tracking a product\n"
         "• <code>/cleartrack</code> — Clear all tracked products\n"
         "• <code>/help</code> — Detailed guide & examples"
     )
@@ -180,7 +222,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "• <code>/track https://www.samsung.com/in/... 75000</code>\n\n"
         "📋 <b>Managing Your Products:</b>\n"
         "• <code>/products</code> or <code>/alerts</code> — See all your tracked items\n"
-        "• <code>/deltrack &lt;ID&gt;</code> — Delete a tracked item\n"
+        "• <code>/offers &lt;NUM or URL&gt;</code> — Check live bank, credit card & coupon offers\n"
+        "• <code>/deltrack &lt;NUM&gt;</code> — Delete a tracked item\n"
         "• <code>/cleartrack</code> — Remove all your tracked items"
     )
     if update.message:
@@ -465,6 +508,7 @@ async def list_products_command(update: Update, context: ContextTypes.DEFAULT_TY
             )
         buttons = [
             InlineKeyboardButton(f"🛒 #{num} View", url=p["url"]),
+            InlineKeyboardButton(f"💳 #{num} Offers", callback_data=f"offers_{p['id']}"),
             InlineKeyboardButton(f"❌ Stop #{num}", callback_data=f"del_{p['id']}"),
         ]
 
@@ -489,6 +533,87 @@ async def list_products_command(update: Update, context: ContextTypes.DEFAULT_TY
             await update.message.reply_text(chunk_text, parse_mode=ParseMode.HTML, reply_markup=reply_markup, disable_web_page_preview=True)
         elif update.callback_query:
             await update.callback_query.message.reply_text(chunk_text, parse_mode=ParseMode.HTML, reply_markup=reply_markup, disable_web_page_preview=True)
+
+
+async def offers_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Check live bank, credit card, cashback, and coupon offers for a tracked item number or product URL."""
+    user = update.effective_user
+    if not user or not update.message:
+        return
+
+    user_pin = database.get_user_pincode(user.id)
+
+    if not context.args:
+        user_products = database.get_user_products(user.id)
+        if user_products:
+            keyboard = [
+                [
+                    InlineKeyboardButton(
+                        f"💳 #{num}: {p['title'][:32]}...",
+                        callback_data=f"offers_{p['id']}",
+                    )
+                ]
+                for num, p in enumerate(user_products[:10], 1)
+            ]
+            await update.message.reply_text(
+                "💳 <b>Check Live Bank & Card Offers</b>\n\n"
+                "Tap a tracked product below, or use:\n"
+                "• <code>/offers 1</code> — Offers for item #1 in your <code>/products</code> list\n"
+                "• <code>/offers &lt;product_link&gt;</code> — Offers for any link",
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup(keyboard),
+            )
+        else:
+            await update.message.reply_text(
+                "💳 <b>Check Live Bank & Card Offers</b>\n\n"
+                "Usage:\n"
+                "• <code>/offers &lt;product_link&gt;</code> — Check offers for any product link\n"
+                "• <code>/offers 1</code> — Check offers for item #1 in your <code>/products</code> list",
+                parse_mode=ParseMode.HTML,
+            )
+        return
+
+    raw_arg = " ".join(context.args).strip()
+    target_url = None
+    target_pin = user_pin
+
+    num_candidate = context.args[0].replace("#", "").strip()
+    if len(context.args) == 1 and num_candidate.isdigit():
+        req_num = int(num_candidate)
+        user_products = database.get_user_products(user.id)
+        target_prod = None
+        if 1 <= req_num <= len(user_products):
+            target_prod = user_products[req_num - 1]
+        else:
+            for p in user_products:
+                if p["id"] == req_num:
+                    target_prod = p
+                    break
+        if not target_prod:
+            await update.message.reply_text(
+                f"❌ Product <code>#{req_num}</code> not found in your tracking list. Check <code>/products</code>.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        target_url = target_prod["url"]
+        target_pin = target_prod.get("pincode") or user_pin
+    else:
+        target_url = raw_arg
+
+    loading = await update.message.reply_text(
+        f"🔍 Fetching live bank & card offers (📍 PIN: <code>{target_pin}</code>)...",
+        parse_mode=ParseMode.HTML,
+    )
+    product = await asyncio.to_thread(product_service.fetch_product, target_url, target_pin)
+    if not product:
+        await loading.edit_text(
+            "❌ Could not fetch live details/offers for this product link right now. Please try again shortly.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    text, reply_markup = build_offers_message(product, target_pin)
+    await loading.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
 
 
 async def deltrack_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -775,6 +900,33 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 await query.edit_message_text(confirm, parse_mode=ParseMode.HTML)
             except Exception:
                 await query.message.reply_text(confirm, parse_mode=ParseMode.HTML)
+
+    elif data.startswith("offers_"):
+        try:
+            product_id = int(data.split("_")[1])
+        except ValueError:
+            return
+        user_products = database.get_user_products(query.from_user.id)
+        target_prod = next((p for p in user_products if p["id"] == product_id), None)
+        if not target_prod:
+            await query.message.reply_text("❌ Product is no longer in your tracking list.", parse_mode=ParseMode.HTML)
+            return
+
+        target_pin = target_prod.get("pincode") or database.get_user_pincode(query.from_user.id)
+        loading = await query.message.reply_text(
+            f"🔍 Fetching live bank & card offers (📍 PIN: <code>{target_pin}</code>)...",
+            parse_mode=ParseMode.HTML,
+        )
+        live_prod = await asyncio.to_thread(product_service.fetch_product, target_prod["url"], target_pin)
+        if not live_prod:
+            await loading.edit_text(
+                "❌ Could not fetch live offers for this product right now. Please try again shortly.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        text, reply_markup = build_offers_message(live_prod, target_pin)
+        await loading.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
 
     elif data.startswith("del_"):
         product_id = int(data.split("_")[1])
@@ -1082,6 +1234,8 @@ def main() -> None:
     app.add_handler(CommandHandler("products", list_products_command))
     app.add_handler(CommandHandler("alerts", list_products_command))
     app.add_handler(CommandHandler("tracked", list_products_command))
+    app.add_handler(CommandHandler("offers", offers_command))
+    app.add_handler(CommandHandler("offer", offers_command))
     app.add_handler(CommandHandler("deltrack", deltrack_command))
     app.add_handler(CommandHandler("cleartrack", cleartrack_command))
 
