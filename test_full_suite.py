@@ -239,6 +239,7 @@ def run_tests():
             currency=prod["currency"],
             pincode=user_pin,
             is_in_stock=prod.get("in_stock", True),
+            offers=prod.get("offers", []),
         )
         inserted_ids.append(pid)
 
@@ -246,7 +247,8 @@ def run_tests():
     assert len(stored) == len(fetched_products), f"Expected {len(fetched_products)} items, got {len(stored)}"
     assert stored[0]["pincode"] == "560001", f"Expected stored item pincode 560001, got {stored[0].get('pincode')}"
     assert "is_in_stock" in stored[0], "Missing is_in_stock in stored product"
-    print(f"  ✅ Successfully tracked all {len(stored)} products in SQLite database with custom delivery PIN and stock status.")
+    assert "offers" in stored[0] and isinstance(stored[0]["offers"], list), "Missing offers list in stored product"
+    print(f"  ✅ Successfully tracked all {len(stored)} products in SQLite database with custom delivery PIN, stock status, and offers.")
 
     # Test Stock Transitions in DB
     test_prod_id = inserted_ids[0]
@@ -262,6 +264,13 @@ def run_tests():
     assert updated_items[test_prod_id]["is_in_stock"] == 1, "Failed to transition to Back-in-Stock (expected 1)"
     assert updated_items[test_prod_id]["current_price"] == 64999.0, "Failed to update price on restock"
     print("  ✅ Database Back-in-Stock transition verified (is_in_stock: 0 ➔ 1 with live price).")
+
+    # Test Offer Change Transition in DB
+    new_test_offers = ["10% Instant Discount on HDFC Credit Cards", "Apply ₹500 Coupon"]
+    database.update_product_offers(test_prod_id, new_test_offers)
+    updated_items = {item["id"]: item for item in database.get_user_products(test_user_id)}
+    assert updated_items[test_prod_id]["offers"] == new_test_offers, f"Offer update failed: {updated_items[test_prod_id].get('offers')}"
+    print("  ✅ Database Offer Change transition verified (offers updated and re-loaded cleanly).")
 
     # Cleanup test user entries
     database.clear_user_products(test_user_id)

@@ -60,6 +60,7 @@ def init_db() -> None:
                 currency TEXT DEFAULT '₹',
                 pincode TEXT DEFAULT '110001',
                 is_in_stock INTEGER DEFAULT 1,
+                offers TEXT DEFAULT '[]',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 last_checked_at TIMESTAMP NULL,
                 is_active INTEGER DEFAULT 1,
@@ -123,6 +124,12 @@ def init_db() -> None:
         if "is_in_stock" not in columns:
             try:
                 cursor.execute("ALTER TABLE tracked_products ADD COLUMN is_in_stock INTEGER DEFAULT 1")
+            except Exception:
+                pass
+
+        if "offers" not in columns:
+            try:
+                cursor.execute("ALTER TABLE tracked_products ADD COLUMN offers TEXT DEFAULT '[]'")
             except Exception:
                 pass
 
@@ -273,10 +280,16 @@ def add_tracked_product(
     currency: str = "₹",
     pincode: Optional[str] = None,
     is_in_stock: bool = True,
+    offers: Optional[Any] = None,
 ) -> int:
     """Add a new product price drop alert or update target price if already actively tracked."""
     pin = pincode or get_user_pincode(user_id)
     stock_val = 1 if is_in_stock else 0
+    offers_json = (
+        json.dumps(offers or [], ensure_ascii=False)
+        if isinstance(offers, (list, tuple))
+        else (str(offers) if offers else "[]")
+    )
     with get_db_connection() as conn:
         cursor = conn.cursor()
         # Prevent duplicate active trackers for the same user and product
@@ -294,10 +307,10 @@ def add_tracked_product(
             cursor.execute(
                 """
                 UPDATE tracked_products
-                SET target_price = ?, current_price = ?, url = ?, image_url = ?, currency = ?, pincode = ?, is_in_stock = ?
+                SET target_price = ?, current_price = ?, url = ?, image_url = ?, currency = ?, pincode = ?, is_in_stock = ?, offers = ?
                 WHERE id = ?
                 """,
-                (target_price, current_price, url, image_url, currency, pin, stock_val, product_id),
+                (target_price, current_price, url, image_url, currency, pin, stock_val, offers_json, product_id),
             )
             conn.commit()
             return product_id
@@ -306,9 +319,9 @@ def add_tracked_product(
             """
             INSERT INTO tracked_products (
                 user_id, chat_id, platform, asin, title, url, image_url,
-                target_price, initial_price, current_price, lowest_price, currency, pincode, is_in_stock, is_active
+                target_price, initial_price, current_price, lowest_price, currency, pincode, is_in_stock, offers, is_active
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
             """,
             (
                 user_id,
@@ -325,6 +338,7 @@ def add_tracked_product(
                 currency,
                 pin,
                 stock_val,
+                offers_json,
             ),
         )
         conn.commit()
@@ -339,14 +353,23 @@ def get_user_products(user_id: int) -> List[Dict[str, Any]]:
             """
             SELECT id, user_id, chat_id, platform, asin AS item_id, title, url, image_url,
                    target_price, initial_price, current_price, lowest_price, currency, pincode,
-                   COALESCE(is_in_stock, 1) AS is_in_stock, created_at
+                   COALESCE(is_in_stock, 1) AS is_in_stock,
+                   COALESCE(offers, '[]') AS offers,
+                   created_at
             FROM tracked_products
             WHERE user_id = ? AND is_active = 1
             ORDER BY created_at DESC
             """,
             (user_id,),
         )
-        return [dict(row) for row in cursor.fetchall()]
+        rows = [dict(row) for row in cursor.fetchall()]
+        for r in rows:
+            try:
+                parsed = json.loads(r.get("offers") or "[]")
+                r["offers"] = parsed if isinstance(parsed, list) else []
+            except Exception:
+                r["offers"] = []
+        return rows
 
 
 def get_all_active_products() -> List[Dict[str, Any]]:
@@ -357,12 +380,41 @@ def get_all_active_products() -> List[Dict[str, Any]]:
             """
             SELECT id, user_id, chat_id, platform, asin AS item_id, title, url, image_url,
                    target_price, initial_price, current_price, lowest_price, currency, pincode,
-                   COALESCE(is_in_stock, 1) AS is_in_stock
+                   COALESCE(is_in_stock, 1) AS is_in_stock,
+                   COALESCE(offers, '[]') AS offers
             FROM tracked_products
             WHERE is_active = 1
             """
         )
-        return [dict(row) for row in cursor.fetchall()]
+        rows = [dict(row) for row in cursor.fetchall()]
+        for r in rows:
+            try:
+                parsed = json.loads(r.get("offers") or "[]")
+                r["offers"] = parsed if isinstance(parsed, list) else []
+            except Exception:
+                r["offers"] = []
+        return rows
+
+
+def update_product_offers(product_id: int, offers: Any) -> None:
+    """Update tracked product active offers."""
+    offers_json = (
+        json.dumps(offers or [], ensure_ascii=False)
+        if isinstance(offers, (list, tuple))
+        else (str(offers) if offers else "[]")
+    )
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            UPDATE tracked_products
+            SET offers = ?,
+                last_checked_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (offers_json, product_id),
+        )
+        conn.commit()
 
 
 def update_product_stock_status(product_id: int, is_in_stock: bool, current_price: Optional[float] = None) -> None:

@@ -7,6 +7,8 @@ Engineered for 24/7 high concurrency, non-blocking asyncio execution, HTML entit
 and persistent database caching across restarts.
 """
 
+from __future__ import annotations
+
 import os
 import re
 import html
@@ -191,7 +193,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     text = (
         f"👋 <b>Welcome to Price Drop Alert Bot, {name}!</b>\n\n"
         "🛍️ Never miss a deal! Send me any product link from <b>11 major platforms</b>, set your desired target price, "
-        "and I will notify you the moment the price drops or when out-of-stock items restock!\n\n"
+        "and I will notify you when price drops, when out-of-stock items restock, or when new offers and coupons appear!\n\n"
         "⚡ <b>Supported Platforms:</b>\n"
         "• 📦 <b>Amazon India & Global</b> (<code>amazon.in</code>, <code>amzn.to</code>)\n"
         "• 🛍️ <b>Flipkart</b> (<code>flipkart.com</code>, <code>dl.flipkart.com</code>)\n"
@@ -260,7 +262,12 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "• <code>/products</code> or <code>/alerts</code> — See all your tracked items\n"
         "• <code>/offers &lt;NUM or URL&gt;</code> — Check live bank, credit card & coupon offers\n"
         "• <code>/deltrack &lt;NUM&gt;</code> — Delete a tracked item\n"
-        "• <code>/cleartrack</code> — Remove all your tracked items"
+        "• <code>/cleartrack</code> — Remove all your tracked items\n\n"
+        "🚨 <b>The 4 Automatic Alert Triggers:</b>\n"
+        "1. 📉 <b>Price Drop:</b> Alert when price drops to or below your target\n"
+        "2. 🟢 <b>Back-in-Stock:</b> Alert when an out-of-stock item is restocked\n"
+        "3. ⚠️ <b>Out-of-Stock:</b> Alert when a monitored item sells out\n"
+        "4. 🏷️ <b>Offer Change:</b> Alert when new bank discounts, coupons, or promo deals appear"
     )
     if update.message:
         await update.message.reply_text(text, parse_mode=ParseMode.HTML)
@@ -415,6 +422,7 @@ async def track_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         currency=currency,
         pincode=user_pin,
         is_in_stock=in_stock,
+        offers=product.get("offers"),
     )
 
     title_escaped = html.escape(product["title"][:75])
@@ -845,6 +853,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             currency=product.get("currency", "₹"),
             pincode=user_pin,
             is_in_stock=False,
+            offers=product.get("offers"),
         )
 
         title_escaped = html.escape(product["title"][:70])
@@ -914,6 +923,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             currency=product["currency"],
             pincode=user_pin,
             is_in_stock=product.get("in_stock", True),
+            offers=product.get("offers"),
         )
 
         title_escaped = html.escape(product["title"][:70])
@@ -1077,11 +1087,12 @@ async def send_alert_safely(
 
 async def check_prices_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     """
-    Background worker that polls active tracked products for price drops and stock changes.
+    Background worker that polls active tracked products for price drops, stock changes, and offer updates.
     Dispatches notifications when:
     1. An item transitions from In-Stock to Out-of-Stock
     2. An item transitions from Out-of-Stock to Back-in-Stock (Restock)
     3. current_price <= target_price (Price Drop)
+    4. New/modified discount offers or coupons appear on the product (Offer Alert)
     """
     products = database.get_all_active_products()
     if not products:
@@ -1107,6 +1118,8 @@ async def check_prices_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 
             curr_stock = prod_data.get("in_stock", True)
             new_price = prod_data.get("price") or 0.0
+            curr_offers = prod_data.get("offers") or []
+            clean_curr_offers = [str(o).strip() for o in curr_offers if str(o).strip()]
 
             for item, pin in items_with_pin:
                 product_id = item["id"]
@@ -1120,16 +1133,23 @@ async def check_prices_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                 platform = prod_data["platform"]
                 badge = prod_data.get("platform_badge", platform)
                 prev_stock = item.get("is_in_stock", 1)
+                prev_offers = item.get("offers") or []
+                clean_prev_offers = [str(o).strip() for o in prev_offers if str(o).strip()]
 
                 title_escaped = html.escape(title[:75])
                 badge_escaped = html.escape(badge)
                 offers_block = format_offers_block(prod_data.get("offers"))
+
+                # Check if offers/promos/coupons changed
+                offers_changed = bool(clean_curr_offers and sorted(clean_curr_offers) != sorted(clean_prev_offers))
 
                 # ====================================================
                 # Case 1: In-Stock -> Out-of-Stock (OOS) Transition
                 # ====================================================
                 if prev_stock == 1 and curr_stock is False:
                     database.update_product_stock_status(product_id, is_in_stock=False)
+                    if clean_curr_offers:
+                        database.update_product_offers(product_id, clean_curr_offers)
                     logger.info(f"Stock Alert: #{product_id} on {platform} went OUT OF STOCK")
 
                     oos_text = (
@@ -1157,6 +1177,8 @@ async def check_prices_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                 # ====================================================
                 elif prev_stock == 0 and curr_stock is True:
                     database.update_product_stock_status(product_id, is_in_stock=True, current_price=new_price)
+                    if clean_curr_offers:
+                        database.update_product_offers(product_id, clean_curr_offers)
                     logger.info(f"Restock Alert: #{product_id} on {platform} is BACK IN STOCK (Price: {new_price})")
 
                     restock_only = is_restock_only(target_price)
@@ -1201,16 +1223,16 @@ async def check_prices_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                     continue
 
                 # ====================================================
-                # Case 4: Item In Stock - Normal Price Check
+                # Case 4: Item In Stock - Price & Offer Check
                 # ====================================================
-                if new_price <= 0 or is_restock_only(target_price):
+                if new_price <= 0:
                     continue
 
                 database.update_product_price(product_id, new_price)
 
                 # Interactive buttons: Direct Link + One-Click Stop Tracking
                 keyboard = [
-                    [InlineKeyboardButton(f"🛒 {'Buy Now on' if new_price <= target_price else 'View on'} {platform}", url=prod_url)],
+                    [InlineKeyboardButton(f"🛒 {'Buy Now on' if (not is_restock_only(target_price) and new_price <= target_price) else 'View on'} {platform}", url=prod_url)],
                     [InlineKeyboardButton("🛑 Stop Tracking", callback_data=f"del_{product_id}")]
                 ]
                 reply_markup = InlineKeyboardMarkup(keyboard)
@@ -1223,8 +1245,13 @@ async def check_prices_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                         logger.warning(f"Accessory mismatch detected for item #{product_id} ({title}). Skipping drop alert.")
                         continue
 
-                if new_price <= target_price:
+                # ----------------------------------------------------
+                # Trigger 1: Price Drop Target Reached
+                # ----------------------------------------------------
+                if not is_restock_only(target_price) and new_price <= target_price:
                     database.mark_product_triggered(product_id, new_price)
+                    if clean_curr_offers:
+                        database.update_product_offers(product_id, clean_curr_offers)
                     logger.info(f"Price Drop Triggered: #{product_id} on {platform} at {new_price} (Target: {target_price})")
 
                     savings = item["initial_price"] - new_price
@@ -1247,7 +1274,43 @@ async def check_prices_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                         break
                     # Micro-pause between messages to the same chat to respect 1 msg/sec limit
                     await asyncio.sleep(0.5)
+
+                # ----------------------------------------------------
+                # Trigger 4: New / Modified Bank Offers & Coupons Detected
+                # ----------------------------------------------------
+                elif offers_changed:
+                    database.update_product_offers(product_id, clean_curr_offers)
+                    logger.info(f"Offer Change Triggered: #{product_id} on {platform} with {len(clean_curr_offers)} offer(s)")
+
+                    offer_lines = "\n".join(
+                        f"• {html.escape(' '.join(o.split())[:180])}" for o in clean_curr_offers[:5]
+                    )
+                    offer_kb = [
+                        [InlineKeyboardButton(f"🛒 View Deal on {platform}", url=prod_url)],
+                        [InlineKeyboardButton("💳 All Offer Details", callback_data=f"offers_{product_id}")],
+                        [InlineKeyboardButton("🛑 Stop Tracking", callback_data=f"del_{product_id}")]
+                    ]
+                    offer_text = (
+                        f"🏷️🎁 <b>{badge_escaped} NEW OFFER / DEAL ALERT!</b> 🎁🏷️\n"
+                        f"━━━━━━━━━━━━━━━━━━━\n"
+                        f"📦 <b>{title_escaped}...</b>\n\n"
+                        f"⚡ <b>New discount, coupon, or bank deal detected on this product!</b>\n"
+                        f"💰 <b>Current Price:</b> <code>{currency}{new_price:,.2f}</code>\n"
+                        f"🎯 <b>Your Target:</b> <code>{currency}{target_price:,.2f}</code>\n"
+                        f"📍 <b>Delivery PIN:</b> <code>{pin}</code>\n\n"
+                        f"💳 <b>Updated Offers & Discounts ({len(clean_curr_offers)}):</b>\n"
+                        f"{offer_lines}\n"
+                        f"━━━━━━━━━━━━━━━━━━━\n"
+                        f"🔥 Check out the deal before the offer expires!"
+                    )
+                    sent = await send_alert_safely(context, chat_id, user_id, offer_text, image_url, InlineKeyboardMarkup(offer_kb))
+                    if not sent:
+                        break
+                    await asyncio.sleep(0.5)
+
                 else:
+                    if clean_prev_offers and not clean_curr_offers:
+                        database.update_product_offers(product_id, [])
                     # Price is still above target: silently record new price in DB without notifying/spamming the user
                     logger.debug(f"Silent check #{product_id} on {platform}: {new_price} > target {target_price}")
 

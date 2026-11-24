@@ -23,10 +23,13 @@ A full-featured Telegram bot that tracks product prices across **11 major e-comm
    - **Method A:** Just paste or share any product link from any of the 6 platforms into the chat! The bot automatically detects the platform, fetches the product photo, title, and current price, and displays quick 1-click discount buttons (`5% Drop`, `10% Drop`, `15% Drop`).
    - **Method B:** Use `/track <PRODUCT_URL> <TARGET_PRICE>` to set an exact target price.
 
-3. **⏰ 24/7 Background Price Monitoring (Every 4 Hours)**
+3. **⏰ 24/7 Background Price & Stock Monitoring (Configurable Interval)**
    - Runs an automated background worker checking all active tracked items every 1.5 hours (`5,400s`, configurable via `CHECK_INTERVAL`).
-   - **Periodic Updates:** Every time the bot checks an item, it sends you a status notification showing the current live price, your target price, how much is remaining, and a 1-click **"🛑 Stop Tracking"** button.
-   - **Price Drop Alerts:** When the price drops to or below your target, you receive an instant alert with product photo, amount saved, and direct link to buy.
+   - **The 4 Real-Time Alert Triggers:**
+     1. 📉 **Price Drop Alert:** When the price drops to or below your target, you receive an instant alert with product photo, amount saved, and direct link to buy.
+     2. 🟢 **Back-in-Stock Alert:** Instant alert the moment an out-of-stock product is restocked and available for order.
+     3. ⚠️ **Out-of-Stock Alert:** Proactive alert when an item you are watching sells out, keeping you informed without manual refreshing.
+     4. 🏷️ **Offer / Deal Change Alert:** Instant alert when new bank discounts (HDFC, ICICI, Axis, SBI), coupons, or promotional deals appear on the tracked product.
 
 4. **🛡️ Dual-Layer Anti-Bot Bypasses**
    - **Layer 1 (`curl_cffi`):** Ultra-fast browser TLS/JA3/JA4 fingerprint impersonation (`chrome124`, `safari17`).

@@ -284,7 +284,10 @@ def extract_croma_offers(pdp_data: Dict[str, Any]) -> List[str]:
         to_date_str = item.get("toDate")
         if to_date_str:
             try:
-                dt = datetime.fromisoformat(str(to_date_str))
+                s = str(to_date_str).strip()
+                if len(s) >= 5 and (s[-5] in ("+", "-")) and s[-3] != ":":
+                    s = s[:-2] + ":" + s[-2:]
+                dt = datetime.fromisoformat(s)
                 if dt.tzinfo is None:
                     dt = dt.replace(tzinfo=timezone.utc)
                 if dt < now:
