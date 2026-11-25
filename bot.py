@@ -41,7 +41,7 @@ import product_service
 # Load environment variables
 load_dotenv()
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", 5400))
+CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", 900))
 RESTOCK_ONLY_TARGET = 999999999.0
 
 # Setup Logging
@@ -1358,10 +1358,15 @@ def main() -> None:
     # Direct message handler (Auto-detects when a product link is pasted)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url_message))
 
-    # Background Job: Configurable polling interval (default: 5400s / 1 hr 30 mins)
+    # Background Job: Configurable polling interval (default: 900s / 15 minutes)
     poll_interval = CHECK_INTERVAL
     if app.job_queue:
-        app.job_queue.run_repeating(check_prices_job, interval=poll_interval, first=15)
+        app.job_queue.run_repeating(
+            check_prices_job,
+            interval=poll_interval,
+            first=15,
+            job_kwargs={"max_instances": 1, "coalesce": True},
+        )
         logger.info(f"Price drop background job registered ({poll_interval}s interval - every {format_interval(poll_interval)}).")
 
     print("\n" + "=" * 65)
