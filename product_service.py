@@ -2136,6 +2136,15 @@ def fetch_sellers(url_or_text: str, pincode: Optional[str] = None) -> Optional[D
         })
 
     # Amazon: Fetch server-rendered AOD multi-seller fragment
+    def _norm_price_val(p_str: str) -> Optional[float]:
+        m_num = re.search(r"([\d,]+(?:\.\d+)?)", str(p_str or ""))
+        if not m_num:
+            return None
+        try:
+            return round(float(m_num.group(1).replace(",", "")), 2)
+        except ValueError:
+            return None
+
     if platform == "Amazon" and prod.get("item_id"):
         asin = prod["item_id"]
         domain = "amazon.com" if "amazon.com" in prod["url"].lower() else "amazon.in"
@@ -2145,7 +2154,13 @@ def fetch_sellers(url_or_text: str, pincode: Optional[str] = None) -> Optional[D
             if r.status_code == 200 and len(r.text) > 500:
                 aod_sellers = _parse_amazon_aod_sellers(r.text, currency=currency)
                 for s in aod_sellers:
-                    if not any(existing["name"].lower() == s["name"].lower() and existing["price"] == s["price"] for existing in sellers):
+                    s_val = _norm_price_val(s["price"])
+                    is_dup = any(
+                        existing["name"].lower() == s["name"].lower()
+                        and (existing["price"] == s["price"] or (s_val is not None and _norm_price_val(existing["price"]) == s_val))
+                        for existing in sellers
+                    )
+                    if not is_dup:
                         sellers.append(s)
         except Exception as e:
             logger.debug(f"Amazon AOD seller fetch failed for {asin}: {e}")
