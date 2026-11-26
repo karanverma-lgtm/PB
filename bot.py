@@ -122,8 +122,8 @@ def safe_caption(text: str, max_len: int = 1000) -> str:
     return truncated
 
 
-def format_offers_block(offers: list | None, max_items: int = 3) -> str:
-    """Format scraped bank/card/coupon offers as a compact HTML block for Telegram messages."""
+def format_offers_block(offers: list | None, max_items: int = 25) -> str:
+    """Format all scraped bank/card/coupon offers as an HTML block for Telegram messages."""
     if not offers:
         return ""
     lines = []
@@ -131,12 +131,12 @@ def format_offers_block(offers: list | None, max_items: int = 3) -> str:
         txt = " ".join(str(raw).split()).strip()
         if not txt:
             continue
-        if len(txt) > 95:
-            txt = txt[:92].rstrip() + "..."
+        if len(txt) > 120:
+            txt = txt[:117].rstrip() + "..."
         lines.append(f"• {html.escape(txt)}")
     if not lines:
         return ""
-    return "\n💳 <b>Available Offers:</b>\n" + "\n".join(lines) + "\n"
+    return f"\n💳 <b>Available Offers ({len(lines)}):</b>\n" + "\n".join(lines) + "\n"
 
 
 def build_offers_message(product: dict, user_pin: str) -> tuple[str, InlineKeyboardMarkup]:
@@ -157,7 +157,7 @@ def build_offers_message(product: dict, user_pin: str) -> tuple[str, InlineKeybo
 
     if offers:
         offer_lines = "\n".join(
-            f"• {html.escape(' '.join(str(o).split())[:180])}" for o in offers[:6]
+            f"• {html.escape(' '.join(str(o).split())[:180])}" for o in offers
         )
         offers_section = f"\n💳 <b>Available Bank & Card Offers ({len(offers)}):</b>\n{offer_lines}"
     else:
@@ -1283,7 +1283,7 @@ async def check_prices_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                     logger.info(f"Offer Change Triggered: #{product_id} on {platform} with {len(clean_curr_offers)} offer(s)")
 
                     offer_lines = "\n".join(
-                        f"• {html.escape(' '.join(o.split())[:180])}" for o in clean_curr_offers[:5]
+                        f"• {html.escape(' '.join(o.split())[:180])}" for o in clean_curr_offers
                     )
                     offer_kb = [
                         [InlineKeyboardButton(f"🛒 View Deal on {platform}", url=prod_url)],

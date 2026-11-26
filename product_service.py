@@ -152,7 +152,7 @@ def detect_platform(url_or_text: str) -> str:
 # Offer / Bank Discount / Coupon Extractors
 # =====================================================================
 
-def _dedupe_offers(offers: List[str], limit: int = 4) -> List[str]:
+def _dedupe_offers(offers: List[str], limit: int = 25) -> List[str]:
     """Normalize whitespace, deduplicate offers case-insensitively, and cap list size."""
     cleaned: List[str] = []
     seen = set()
@@ -239,7 +239,7 @@ def extract_amazon_offers(soup: BeautifulSoup) -> List[str]:
     for _, formatted in sorted(sopp_items, key=lambda x: x[0]):
         offers.append(formatted)
 
-    return _dedupe_offers(offers, limit=4)
+    return _dedupe_offers(offers, limit=25)
 
 
 def extract_flipkart_offers(soup: BeautifulSoup, raw_html: str) -> List[str]:
@@ -248,27 +248,42 @@ def extract_flipkart_offers(soup: BeautifulSoup, raw_html: str) -> List[str]:
     bank_summary_fallback: Optional[str] = None
 
     # 1. Modern Flipkart ATLAS_NEP_V2 embedded JSON ("type":"NepOffers")
-    for m in re.finditer(r'"type"\s*:\s*"NepOffers"', raw_html):
-        chunk = raw_html[m.start():m.start() + 900]
+    in_emi_section = False
+    nep_matches = list(re.finditer(r'"type"\s*:\s*"NepOffers"', raw_html))
+    for idx, m in enumerate(nep_matches):
+        next_start = nep_matches[idx + 1].start() if idx + 1 < len(nep_matches) else m.start() + 900
+        chunk = raw_html[m.start():min(next_start, m.start() + 900)]
         otype_m = re.search(r'"offerType"\s*:\s*"([^"]+)"', chunk)
-        if otype_m and otype_m.group(1).upper() == "EXCHANGE":
+        otype_val = otype_m.group(1).upper() if otype_m else ""
+        if otype_val == "EXCHANGE":
             continue
+        if otype_val == "PBO":
+            in_emi_section = False
+        elif otype_val == "PBO_EMI":
+            in_emi_section = True
 
         title_m = re.search(r'"offerTitle"\s*:\s*"([^"]+)"', chunk)
         sub_m = re.search(r'"contentValue"\s*:\s*"([^"]+)"', chunk)
         disc_m = re.search(r'"discountedPriceText"\s*:\s*"([^"]+)"', chunk)
 
-        if title_m and disc_m:
-            otitle = title_m.group(1).strip()
-            odisc = disc_m.group(1).strip()
+        otitle = title_m.group(1).strip() if title_m else ""
+        osub = sub_m.group(1).strip() if sub_m else ""
+        odisc = disc_m.group(1).strip() if disc_m else ""
+
+        if otitle and odisc:
             # Ignore placeholder zero discounts
             if re.search(r"₹\s*0\b", odisc):
                 continue
-            osub = sub_m.group(1).strip() if sub_m else ""
             if osub and osub.lower() not in otitle.lower():
                 offers.append(f"{otitle} ({osub}): {odisc}")
             else:
                 offers.append(f"{otitle}: {odisc}")
+        elif otitle and osub and re.search(r"(?:₹\s*[\d,]+\s*off|\d+%\s*off|cashback|no\s*cost\s*emi)", osub, re.I):
+            # EMI / card offers where the discount amount is embedded in contentValue instead of discountedPriceText
+            if re.search(r"₹\s*0\b", osub):
+                continue
+            tag = "EMI • " if (in_emi_section and "emi" not in osub.lower()) else ""
+            offers.append(f"{otitle} ({tag}{osub})")
         elif not bank_summary_fallback:
             meta_k = re.search(r'"metaInfoLabelKey"\s*:\s*"([^"]*Bank offer[^"]*)"', chunk, re.I)
             meta_v = re.search(r'"metaInfoLabelValue"\s*:\s*"([^"]+)"', chunk)
@@ -283,13 +298,13 @@ def extract_flipkart_offers(soup: BeautifulSoup, raw_html: str) -> List[str]:
         avail_node = soup.find(string=re.compile(r"Available offers", re.I))
         if avail_node and avail_node.parent:
             container = avail_node.parent.parent or avail_node.parent
-            for li in container.find_all("li")[:6]:
+            for li in container.find_all("li")[:20]:
                 txt = " ".join(li.get_text(" ", strip=True).split())
                 txt = re.sub(r"\b(?:T&C|View Plans|Know More)\b.*$", "", txt, flags=re.I).strip(" .:-")
                 if len(txt) >= 12:
                     offers.append(txt)
 
-    return _dedupe_offers(offers, limit=4)
+    return _dedupe_offers(offers, limit=25)
 
 
 def extract_croma_offers(pdp_data: Dict[str, Any]) -> List[str]:
@@ -336,7 +351,7 @@ def extract_croma_offers(pdp_data: Dict[str, Any]) -> List[str]:
             d_str = f"{d_str} OFF"
         offers.append(f"Store Discount: {d_str}")
 
-    return _dedupe_offers(offers, limit=4)
+    return _dedupe_offers(offers, limit=25)
 
 
 # =====================================================================

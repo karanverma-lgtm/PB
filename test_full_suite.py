@@ -149,14 +149,18 @@ def run_tests():
     print(f"  ✅ Amazon offer extraction verified ({len(amz_offers)} itembox + {len(amz_sopp_offers)} SOPP offers).")
 
     fk_offer_html = (
-        '<html><body><script>{"type":"NepOffers","offerTitle":"Flipkart Axis","offerSubTitleRC":{"value":{"contentList":[{"contentValue":"Credit Card"}]}},"discountedPriceText":"₹2,995 off"}'
+        '<html><body><script>{"type":"NepOffers","offerType":"PBO","offerTitle":"Bank offers"}'
+        '{"type":"NepOffers","offerTitle":"Flipkart Axis","offerSubTitleRC":{"value":{"contentList":[{"contentValue":"Credit Card"}]}},"discountedPriceText":"₹2,995 off"}'
         '{"type":"NepOffers","offerTitle":"Flipkart SBI","offerSubTitleRC":{"value":{"contentList":[{"contentValue":"Credit Card"}]}},"discountedPriceText":"₹2,995 off"}'
+        '{"type":"NepOffers","offerType":"PBO_EMI","offerTitle":"EMI offers"}'
+        '{"type":"NepOffers","offerTitle":"ICICI Bank","offerSubTitleRC":{"value":{"contentList":[{"contentValue":"Credit Card • ₹5,000 off"}]}}}'
         '{"type":"NepOffers","offerTitle":"Zero Placeholder","discountedPriceText":"₹0 off"}</script></body></html>'
     )
     fk_offers = product_service.extract_flipkart_offers(BeautifulSoup(fk_offer_html, "html.parser"), fk_offer_html)
-    assert len(fk_offers) == 2, f"Expected 2 Flipkart offers, got {fk_offers}"
+    assert len(fk_offers) == 3, f"Expected 3 Flipkart offers (2 bank + 1 EMI), got {fk_offers}"
     assert "Flipkart Axis (Credit Card): ₹2,995 off" == fk_offers[0], f"Unexpected Flipkart offer: {fk_offers[0]}"
-    print(f"  ✅ Flipkart NepOffers extraction verified ({len(fk_offers)} bank/card offers).")
+    assert "ICICI Bank (EMI • Credit Card • ₹5,000 off)" == fk_offers[2], f"Unexpected Flipkart EMI offer: {fk_offers[2]}"
+    print(f"  ✅ Flipkart NepOffers extraction verified ({len(fk_offers)} bank/card/EMI offers).")
 
     croma_pdp = {
         "discount": "12%",
@@ -171,7 +175,7 @@ def run_tests():
     print(f"  ✅ Croma offer filtering verified (expired & disclaimer notes excluded).")
 
     formatted_block = bot.format_offers_block(amz_offers)
-    assert "💳 <b>Available Offers:</b>" in formatted_block and "Axis Bank Credit Cards" in formatted_block
+    assert "💳 <b>Available Offers (3):</b>" in formatted_block and "Axis Bank Credit Cards" in formatted_block
     msg_with, kb_with = bot.build_offers_message(
         {"platform": "Amazon", "platform_badge": "📦 Amazon", "title": "Apple iPhone 15", "price": 59900.0, "currency": "₹", "url": "https://www.amazon.in/dp/B0CHX2F5QT", "in_stock": True, "offers": amz_offers},
         "110001",
