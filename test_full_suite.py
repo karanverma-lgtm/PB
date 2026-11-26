@@ -237,8 +237,22 @@ def run_tests():
         },
         "110001",
     )
-    assert "ALLBRANDLAPTOP" in seller_msg and "Sellers Found (1)" in seller_msg and seller_kb is not None
-    print("  ✅ Amazon/Flipkart Buy Box seller extraction & /sellers formatting verified.")
+    assert "ALLBRANDLAPTOP" in seller_msg and "Sellers & Pricing (1)" in seller_msg and seller_kb is not None
+    fk_api_sample = {
+        "RESPONSE": {
+            "data": {
+                "product_seller_detail_1": {
+                    "data": [
+                        {"value": {"selected": False, "sellerInfo": {"value": {"name": "ALLBRANDLAPTOP"}}, "pricing": {"value": {"finalPrice": {"decimalValue": "83979.00"}}}}},
+                        {"value": {"selected": True, "sellerInfo": {"value": {"name": "CORSECA", "rating": {"average": 4.6}}}, "pricing": {"value": {"finalPrice": {"decimalValue": "78490.00"}}}}},
+                    ]
+                }
+            }
+        }
+    }
+    parsed_fk_sellers = product_service._parse_flipkart_sellers_api(fk_api_sample)
+    assert len(parsed_fk_sellers) == 2 and parsed_fk_sellers[0]["name"] == "CORSECA" and parsed_fk_sellers[0]["price"] == "₹78,490.00", f"Unexpected FK API sellers: {parsed_fk_sellers}"
+    print("  ✅ Amazon/Flipkart multi-seller pricing extraction & /sellers formatting verified.")
 
     # 4. Database Integration Test
     print("\n💾 4. Database Integration & Stock Transition Tests:")

@@ -200,7 +200,7 @@ def build_sellers_message(seller_data: dict, user_pin: str) -> tuple[str, Inline
 
     if sellers:
         seller_lines = []
-        for idx, s in enumerate(sellers[:15], 1):
+        for idx, s in enumerate(sellers[:25], 1):
             sname = html.escape(str(s.get("name") or "Seller"))
             sprice = html.escape(str(s.get("price") or ""))
             scond = html.escape(str(s.get("condition") or ""))
@@ -213,9 +213,9 @@ def build_sellers_message(seller_data: dict, user_pin: str) -> tuple[str, Inline
 
         note = ""
         if platform == "Flipkart" and seller_data.get("has_other_sellers_link") and len(sellers) <= 1:
-            note = "\n\nℹ️ <i>Flipkart loads additional sellers via JS. Tap <b>See All Sellers</b> below to view every seller on Flipkart.</i>"
+            note = "\n\nℹ️ <i>Additional sellers could not be fetched right now. Tap <b>See All Sellers</b> below to view them on Flipkart.</i>"
 
-        sellers_section = f"\n🏬 <b>Sellers Found ({len(sellers)}):</b>\n" + "\n".join(seller_lines) + note
+        sellers_section = f"\n🏬 <b>Sellers & Pricing ({len(sellers)}):</b>\n" + "\n".join(seller_lines) + note
     else:
         sellers_section = "\nℹ️ <i>Seller details are not exposed on this product page.</i>"
 

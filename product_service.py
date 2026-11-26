@@ -2112,6 +2112,70 @@ def _parse_amazon_aod_sellers(aod_html: str, currency: str = "₹") -> List[Dict
     return sellers
 
 
+def _parse_flipkart_sellers_api(api_json: Dict[str, Any], currency: str = "₹") -> List[Dict[str, str]]:
+    """Parse all sellers and their live prices from Flipkart's dynamic product-sellers API JSON."""
+    sellers: List[Dict[str, str]] = []
+    seen = set()
+    items = (
+        api_json.get("RESPONSE", {})
+        .get("data", {})
+        .get("product_seller_detail_1", {})
+        .get("data", [])
+    )
+    if not isinstance(items, list):
+        return sellers
+
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        val = it.get("value") or {}
+        s_info = (val.get("sellerInfo") or {}).get("value") or {}
+        s_name = str(s_info.get("name") or "").strip()
+        if not s_name:
+            continue
+
+        pricing_val = (val.get("pricing") or {}).get("value") or {}
+        fp = pricing_val.get("finalPrice") or {}
+        dec = fp.get("decimalValue")
+        if dec is None:
+            prices = pricing_val.get("prices") or []
+            if prices and isinstance(prices[0], dict):
+                dec = prices[0].get("decimalValue")
+
+        price_str = ""
+        price_num = float("inf")
+        if dec is not None:
+            try:
+                price_num = float(dec)
+                price_str = f"{currency}{price_num:,.2f}"
+            except (TypeError, ValueError):
+                pass
+
+        rating_val = (s_info.get("rating") or {}).get("average")
+        cond_parts = []
+        if val.get("selected"):
+            cond_parts.append("Selected")
+        if rating_val:
+            cond_parts.append(f"★ {rating_val}")
+        cond = " • ".join(cond_parts)
+
+        key = (s_name.lower(), price_str)
+        if key in seen:
+            continue
+        seen.add(key)
+        sellers.append({
+            "name": s_name,
+            "price": price_str,
+            "condition": cond,
+            "_sort_price": price_num,
+        })
+
+    sellers.sort(key=lambda x: x.get("_sort_price", float("inf")))
+    for s in sellers:
+        s.pop("_sort_price", None)
+    return sellers
+
+
 def fetch_sellers(url_or_text: str, pincode: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """
     On-demand seller fetcher (never called during background price polling).
@@ -2165,15 +2229,49 @@ def fetch_sellers(url_or_text: str, pincode: Optional[str] = None) -> Optional[D
         except Exception as e:
             logger.debug(f"Amazon AOD seller fetch failed for {asin}: {e}")
 
-    # Flipkart: Optionally parse /sellers?pid=... with Camoufox if binary is available
-    elif platform == "Flipkart" and other_url and CAMOUFOX_AVAILABLE:
-        cam_html = fetch_page_with_camoufox(other_url, timeout_ms=20000, pincode=pincode)
-        if cam_html:
-            # Extract seller rows if rendered
-            for m in re.finditer(r'"sellerName"\s*:\s*"([^"]+)"', cam_html):
-                sname = m.group(1).strip()
-                if sname and not any(existing["name"].lower() == sname.lower() for existing in sellers):
-                    sellers.append({"name": sname, "price": "", "condition": "Other Seller"})
+    # Flipkart: Query Flipkart's dynamic product-sellers API for all sellers & prices
+    elif platform == "Flipkart" and prod.get("item_id") and prod["item_id"] != "FLIPKART_ITEM":
+        pid = prod["item_id"]
+        pin = str(pincode or "110001").strip()
+        fk_api_headers = {
+            "User-Agent": HEADERS["User-Agent"],
+            "Accept": "*/*",
+            "Content-Type": "application/json",
+            "X-User-Agent": f"{HEADERS['User-Agent']} FKUA/website/42/website/Desktop",
+            "Origin": "https://www.flipkart.com",
+            "Referer": other_url or prod["url"],
+        }
+        try:
+            r_fk = requests.post(
+                "https://2.rome.api.flipkart.com/api/3/page/dynamic/product-sellers",
+                json={"requestContext": {"productId": pid}, "locationContext": {"pincode": pin}},
+                headers=fk_api_headers,
+                impersonate="chrome120",
+                timeout=15,
+            )
+            if r_fk.status_code == 200:
+                fk_sellers = _parse_flipkart_sellers_api(r_fk.json(), currency=currency)
+                if fk_sellers:
+                    # Merge API sellers with primary Buy Box seller without duplicates
+                    for s in fk_sellers:
+                        s_val = _norm_price_val(s["price"])
+                        existing_idx = next(
+                            (
+                                idx
+                                for idx, ex in enumerate(sellers)
+                                if ex["name"].lower() == s["name"].lower()
+                                and (ex["price"] == s["price"] or (s_val is not None and _norm_price_val(ex["price"]) == s_val))
+                            ),
+                            None,
+                        )
+                        if existing_idx is None:
+                            sellers.append(s)
+                        elif s.get("condition") and "Buy Box" in sellers[existing_idx].get("condition", ""):
+                            sellers[existing_idx]["condition"] = f"Buy Box • {s['condition']}"
+                    # Sort all sellers lowest-price-first
+                    sellers.sort(key=lambda x: _norm_price_val(x["price"]) if _norm_price_val(x["price"]) is not None else float("inf"))
+        except Exception as e:
+            logger.debug(f"Flipkart product-sellers API failed for {pid}: {e}")
 
     return {
         "product": prod,
