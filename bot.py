@@ -180,6 +180,60 @@ def build_offers_message(product: dict, user_pin: str) -> tuple[str, InlineKeybo
     return text, InlineKeyboardMarkup(keyboard)
 
 
+def build_sellers_message(seller_data: dict, user_pin: str) -> tuple[str, InlineKeyboardMarkup]:
+    """Build detailed seller info message and action keyboard for /sellers command & inline button."""
+    product = seller_data["product"]
+    platform = product.get("platform", "Store")
+    badge_escaped = html.escape(product.get("platform_badge", platform))
+    title_escaped = html.escape(product["title"][:85])
+    currency = product.get("currency", "₹")
+    curr_price = product.get("price") or 0.0
+    in_stock = product.get("in_stock", True)
+    sellers = seller_data.get("sellers") or []
+    all_sellers_url = seller_data.get("all_sellers_url") or product["url"]
+
+    price_line = (
+        f"💰 <b>Buy Box Price:</b> <code>{currency}{curr_price:,.2f}</code>"
+        if in_stock
+        else "❌ <b>Stock Status:</b> <code>Currently Out of Stock</code>"
+    )
+
+    if sellers:
+        seller_lines = []
+        for idx, s in enumerate(sellers[:15], 1):
+            sname = html.escape(str(s.get("name") or "Seller"))
+            sprice = html.escape(str(s.get("price") or ""))
+            scond = html.escape(str(s.get("condition") or ""))
+            parts = [f"<b>#{idx} {sname}</b>"]
+            if sprice:
+                parts.append(f"<code>{sprice}</code>")
+            if scond:
+                parts.append(f"<i>({scond})</i>")
+            seller_lines.append("• " + " — ".join(parts))
+
+        note = ""
+        if platform == "Flipkart" and seller_data.get("has_other_sellers_link") and len(sellers) <= 1:
+            note = "\n\nℹ️ <i>Flipkart loads additional sellers via JS. Tap <b>See All Sellers</b> below to view every seller on Flipkart.</i>"
+
+        sellers_section = f"\n🏬 <b>Sellers Found ({len(sellers)}):</b>\n" + "\n".join(seller_lines) + note
+    else:
+        sellers_section = "\nℹ️ <i>Seller details are not exposed on this product page.</i>"
+
+    text = (
+        f"{badge_escaped} <b>{title_escaped}...</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"{price_line}\n"
+        f"📍 <b>Delivery PIN:</b> <code>{user_pin}</code>\n"
+        f"{sellers_section}\n"
+        f"━━━━━━━━━━━━━━━━━━━"
+    )
+    keyboard = [
+        [InlineKeyboardButton("🏬 See All Sellers", url=all_sellers_url)],
+        [InlineKeyboardButton(f"🛒 View on {platform}", url=product["url"])],
+    ]
+    return text, InlineKeyboardMarkup(keyboard)
+
+
 # ---------------------------------------------------------
 # Command Handlers
 # ---------------------------------------------------------
@@ -215,6 +269,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "• <code>/pincode &lt;6-DIGIT-PIN&gt;</code> — Set delivery PIN for local price & stock\n"
         "• <code>/products</code> — View and manage all your tracked items\n"
         "• <code>/offers &lt;NUM or URL&gt;</code> — Check live bank, card & coupon offers\n"
+        "• <code>/sellers &lt;NUM or URL&gt;</code> — Check Buy Box & other sellers\n"
         "• <code>/deltrack &lt;NUM&gt;</code> — Stop tracking a product\n"
         "• <code>/cleartrack</code> — Clear all tracked products\n"
         "• <code>/help</code> — Detailed guide & examples"
@@ -261,6 +316,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "📋 <b>Managing Your Products:</b>\n"
         "• <code>/products</code> or <code>/alerts</code> — See all your tracked items\n"
         "• <code>/offers &lt;NUM or URL&gt;</code> — Check live bank, credit card & coupon offers\n"
+        "• <code>/sellers &lt;NUM or URL&gt;</code> — Check Buy Box & available sellers\n"
         "• <code>/deltrack &lt;NUM&gt;</code> — Delete a tracked item\n"
         "• <code>/cleartrack</code> — Remove all your tracked items\n\n"
         "🚨 <b>The 4 Automatic Alert Triggers:</b>\n"
@@ -553,6 +609,7 @@ async def list_products_command(update: Update, context: ContextTypes.DEFAULT_TY
         buttons = [
             InlineKeyboardButton(f"🛒 #{num} View", url=p["url"]),
             InlineKeyboardButton(f"💳 #{num} Offers", callback_data=f"offers_{p['id']}"),
+            InlineKeyboardButton(f"🏬 #{num} Sellers", callback_data=f"sellers_{p['id']}"),
             InlineKeyboardButton(f"❌ Stop #{num}", callback_data=f"del_{p['id']}"),
         ]
 
@@ -660,6 +717,87 @@ async def offers_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await loading.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
 
 
+async def sellers_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Check primary Buy Box seller and available other sellers for a tracked item number or product URL."""
+    user = update.effective_user
+    if not user or not update.message:
+        return
+
+    user_pin = database.get_user_pincode(user.id)
+
+    if not context.args:
+        user_products = database.get_user_products(user.id)
+        if user_products:
+            keyboard = [
+                [
+                    InlineKeyboardButton(
+                        f"🏬 #{num}: {p['title'][:32]}...",
+                        callback_data=f"sellers_{p['id']}",
+                    )
+                ]
+                for num, p in enumerate(user_products[:10], 1)
+            ]
+            await update.message.reply_text(
+                "🏬 <b>Check Product Sellers</b>\n\n"
+                "Tap a tracked product below, or use:\n"
+                "• <code>/sellers 1</code> — Sellers for item #1 in your <code>/products</code> list\n"
+                "• <code>/sellers &lt;product_link&gt;</code> — Sellers for any link",
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup(keyboard),
+            )
+        else:
+            await update.message.reply_text(
+                "🏬 <b>Check Product Sellers</b>\n\n"
+                "Usage:\n"
+                "• <code>/sellers &lt;product_link&gt;</code> — Check sellers for any product link\n"
+                "• <code>/sellers 1</code> — Check sellers for item #1 in your <code>/products</code> list",
+                parse_mode=ParseMode.HTML,
+            )
+        return
+
+    raw_arg = " ".join(context.args).strip()
+    target_url = None
+    target_pin = user_pin
+
+    num_candidate = context.args[0].replace("#", "").strip()
+    if len(context.args) == 1 and num_candidate.isdigit():
+        req_num = int(num_candidate)
+        user_products = database.get_user_products(user.id)
+        target_prod = None
+        if 1 <= req_num <= len(user_products):
+            target_prod = user_products[req_num - 1]
+        else:
+            for p in user_products:
+                if p["id"] == req_num:
+                    target_prod = p
+                    break
+        if not target_prod:
+            await update.message.reply_text(
+                f"❌ Product <code>#{req_num}</code> not found in your tracking list. Check <code>/products</code>.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        target_url = target_prod["url"]
+        target_pin = target_prod.get("pincode") or user_pin
+    else:
+        target_url = raw_arg
+
+    loading = await update.message.reply_text(
+        f"🔍 Fetching seller details (📍 PIN: <code>{target_pin}</code>)...",
+        parse_mode=ParseMode.HTML,
+    )
+    seller_data = await asyncio.to_thread(product_service.fetch_sellers, target_url, target_pin)
+    if not seller_data:
+        await loading.edit_text(
+            "❌ Could not fetch seller details for this product link right now. Please try again shortly.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    text, reply_markup = build_sellers_message(seller_data, target_pin)
+    await loading.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+
+
 async def deltrack_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Delete a tracked product by its personal list number (e.g. /deltrack 1) or ID."""
     user = update.effective_user
@@ -754,6 +892,7 @@ async def handle_url_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
     badge_escaped = html.escape(product.get("platform_badge", platform))
     url_escaped = html.escape(product["url"])
     offers_block = format_offers_block(product.get("offers"))
+    seller_line = f"🏬 <b>Seller:</b> <code>{html.escape(product['seller'])}</code>\n" if product.get("seller") else ""
 
     # Store in memory for instant access
     context.user_data[f"prod_{cb_id}"] = product
@@ -763,6 +902,7 @@ async def handle_url_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
             f"{badge_escaped} <b>{title_escaped}...</b>\n"
             f"━━━━━━━━━━━━━━━━━━━\n"
             f"❌ <b>Stock Status:</b> <code>Currently Out of Stock</code>\n"
+            f"{seller_line}"
             f"📍 <b>Delivery PIN:</b> <code>{user_pin}</code> (Change with <code>/pincode</code>)\n"
             f"{offers_block}\n"
             f"🔔 This item is currently unavailable. Click below to get an instant <b>Back-in-Stock Restock Alert</b> the moment it's available, or track a target price with <code>/track {url_escaped} &lt;price&gt;</code>."
@@ -784,6 +924,7 @@ async def handle_url_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
             f"{badge_escaped} <b>{title_escaped}...</b>\n"
             f"━━━━━━━━━━━━━━━━━━━\n"
             f"💰 <b>Current Price:</b> <code>{currency}{curr_price:,.2f}</code>\n"
+            f"{seller_line}"
             f"📍 <b>Delivery PIN:</b> <code>{user_pin}</code> (Change with <code>/pincode</code>)\n"
             f"{offers_block}\n"
             f"🎯 <b>Select your desired price drop below:</b> or reply with <code>/track {url_escaped} &lt;price&gt;</code>"
@@ -979,6 +1120,33 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             return
 
         text, reply_markup = build_offers_message(live_prod, target_pin)
+        await loading.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+
+    elif data.startswith("sellers_"):
+        try:
+            product_id = int(data.split("_")[1])
+        except ValueError:
+            return
+        user_products = database.get_user_products(query.from_user.id)
+        target_prod = next((p for p in user_products if p["id"] == product_id), None)
+        if not target_prod:
+            await query.message.reply_text("❌ Product is no longer in your tracking list.", parse_mode=ParseMode.HTML)
+            return
+
+        target_pin = target_prod.get("pincode") or database.get_user_pincode(query.from_user.id)
+        loading = await query.message.reply_text(
+            f"🔍 Fetching seller details (📍 PIN: <code>{target_pin}</code>)...",
+            parse_mode=ParseMode.HTML,
+        )
+        seller_data = await asyncio.to_thread(product_service.fetch_sellers, target_prod["url"], target_pin)
+        if not seller_data:
+            await loading.edit_text(
+                "❌ Could not fetch seller details for this product right now. Please try again shortly.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        text, reply_markup = build_sellers_message(seller_data, target_pin)
         await loading.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
 
     elif data.startswith("del_"):
@@ -1349,6 +1517,8 @@ def main() -> None:
     app.add_handler(CommandHandler("tracked", list_products_command))
     app.add_handler(CommandHandler("offers", offers_command))
     app.add_handler(CommandHandler("offer", offers_command))
+    app.add_handler(CommandHandler("sellers", sellers_command))
+    app.add_handler(CommandHandler("seller", sellers_command))
     app.add_handler(CommandHandler("deltrack", deltrack_command))
     app.add_handler(CommandHandler("cleartrack", cleartrack_command))
 

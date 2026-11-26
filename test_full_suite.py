@@ -221,6 +221,25 @@ def run_tests():
     assert isinstance(product_service.CAMOUFOX_AVAILABLE, bool)
     print(f"  ✅ Camoufox local binary availability check verified (CAMOUFOX_AVAILABLE={product_service.CAMOUFOX_AVAILABLE}).")
 
+    # 3d. Seller Extraction & /sellers Command Formatting Tests
+    print("\n🏬 3d. Seller Extraction & /sellers Command Tests:")
+    amz_seller_html = '<html><body><a id="sellerProfileTriggerId">Appario Retail Private Ltd</a></body></html>'
+    assert product_service.extract_amazon_seller(BeautifulSoup(amz_seller_html, "html.parser")) == "Appario Retail Private Ltd"
+    fk_seller_html = '<html><body><div>Seller: ALLBRANDLAPTOP</div><a href="/sellers?pid=COMHM94A7PHVCQT7">See other sellers</a></body></html>'
+    fk_seller, fk_other_url = product_service.extract_flipkart_seller(BeautifulSoup(fk_seller_html, "html.parser"), fk_seller_html)
+    assert fk_seller == "ALLBRANDLAPTOP" and fk_other_url == "https://www.flipkart.com/sellers?pid=COMHM94A7PHVCQT7"
+    seller_msg, seller_kb = bot.build_sellers_message(
+        {
+            "product": {"platform": "Flipkart", "platform_badge": "🛍️ Flipkart", "title": "HP 15 Laptop", "price": 83979.0, "currency": "₹", "url": "https://www.flipkart.com/p/itm", "in_stock": True},
+            "sellers": [{"name": "ALLBRANDLAPTOP", "price": "₹83,979.00", "condition": "Buy Box"}],
+            "all_sellers_url": fk_other_url,
+            "has_other_sellers_link": True,
+        },
+        "110001",
+    )
+    assert "ALLBRANDLAPTOP" in seller_msg and "Sellers Found (1)" in seller_msg and seller_kb is not None
+    print("  ✅ Amazon/Flipkart Buy Box seller extraction & /sellers formatting verified.")
+
     # 4. Database Integration Test
     print("\n💾 4. Database Integration & Stock Transition Tests:")
     database.init_db()

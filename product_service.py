@@ -355,6 +355,63 @@ def extract_croma_offers(pdp_data: Dict[str, Any]) -> List[str]:
 
 
 # =====================================================================
+# Seller Extractors (Primary Buy Box + On-Demand Multi-Seller)
+# =====================================================================
+
+def extract_amazon_seller(soup: BeautifulSoup) -> Optional[str]:
+    """Extract primary Buy Box seller name from Amazon product HTML."""
+    for sel in [
+        "#sellerProfileTriggerId",
+        "#tabular-buybox-truncate-1 .tabular-buybox-text",
+        "#tabular-buybox .tabular-buybox-text[tabular-attribute-name='Sold by']",
+    ]:
+        el = soup.select_one(sel)
+        if el:
+            txt = " ".join(el.get_text(" ", strip=True).split()).strip()
+            if txt and len(txt) >= 2:
+                return txt
+
+    merch = soup.select_one("#merchant-info")
+    if merch:
+        m_txt = " ".join(merch.get_text(" ", strip=True).split())
+        m = re.search(r"Sold by\s+(.+?)(?:\s+and\s+Fulfilled by|\s*\(|$)", m_txt, re.I)
+        if m:
+            return m.group(1).strip(" .")
+    return None
+
+
+def extract_flipkart_seller(soup: BeautifulSoup, raw_html: str) -> tuple[Optional[str], Optional[str]]:
+    """Extract primary Buy Box seller name and 'See other sellers' URL from Flipkart HTML."""
+    seller_name: Optional[str] = None
+    other_sellers_url: Optional[str] = None
+
+    # 1. Primary seller from DOM ("Seller: <NAME>") or embedded JSON
+    seller_node = soup.find(string=re.compile(r"^\s*Seller:\s*\S+", re.I))
+    if seller_node:
+        s_txt = " ".join(str(seller_node).split())
+        s_txt = re.sub(r"^\s*Seller:\s*", "", s_txt, flags=re.I).strip()
+        if s_txt:
+            seller_name = s_txt
+
+    if not seller_name:
+        m_js = re.search(r'"text"\s*:\s*"Seller:\s*([^"]+)"', raw_html)
+        if m_js:
+            seller_name = m_js.group(1).strip()
+
+    # 2. "See other sellers" link (/sellers?pid=...)
+    a_other = soup.find("a", href=re.compile(r"/sellers\?pid=", re.I))
+    if a_other and a_other.get("href"):
+        href = a_other["href"].strip()
+        other_sellers_url = f"https://www.flipkart.com{href}" if href.startswith("/") else href
+    else:
+        m_href = re.search(r'"(/sellers\?pid=[A-Z0-9]+)"', raw_html, re.I)
+        if m_href:
+            other_sellers_url = f"https://www.flipkart.com{m_href.group(1)}"
+
+    return seller_name, other_sellers_url
+
+
+# =====================================================================
 # 1. Amazon Scraper
 # =====================================================================
 
@@ -581,6 +638,8 @@ def parse_amazon_soup(soup: BeautifulSoup, asin: str, canonical_url: str, pincod
             img_url = og_img.get("content")
 
     offers = extract_amazon_offers(soup)
+    seller = extract_amazon_seller(soup)
+    other_sellers_url = f"https://www.amazon.in/gp/offer-listing/{asin}" if "amazon.in" in canonical_url else f"https://www.amazon.com/gp/offer-listing/{asin}"
 
     return {
         "platform": "Amazon",
@@ -594,6 +653,8 @@ def parse_amazon_soup(soup: BeautifulSoup, asin: str, canonical_url: str, pincod
         "pincode": str(pincode or "110001"),
         "in_stock": is_in_stock,
         "offers": offers,
+        "seller": seller,
+        "other_sellers_url": other_sellers_url,
     }
 
 
@@ -844,6 +905,7 @@ def parse_flipkart_soup(soup: BeautifulSoup, url: str, pincode: Optional[str] = 
 
     item_id = extract_flipkart_id(url)
     offers = extract_flipkart_offers(soup, soup_str)
+    seller, other_sellers_url = extract_flipkart_seller(soup, soup_str)
 
     return {
         "platform": "Flipkart",
@@ -857,6 +919,8 @@ def parse_flipkart_soup(soup: BeautifulSoup, url: str, pincode: Optional[str] = 
         "pincode": str(pincode or "110001"),
         "in_stock": is_in_stock,
         "offers": offers,
+        "seller": seller,
+        "other_sellers_url": other_sellers_url,
     }
 
 
@@ -1993,4 +2057,113 @@ def fetch_product(url_or_text: str, pincode: Optional[str] = None) -> Optional[D
 
     if res is not None:
         res.setdefault("offers", [])
+        res.setdefault("seller", None)
+        res.setdefault("other_sellers_url", None)
     return res
+
+
+def _parse_amazon_aod_sellers(aod_html: str, currency: str = "₹") -> List[Dict[str, str]]:
+    """Parse all seller entries from Amazon's aodAjaxMain HTML fragment."""
+    sellers: List[Dict[str, str]] = []
+    seen = set()
+    soup = BeautifulSoup(aod_html, "html.parser")
+    nodes = []
+    pinned = soup.select_one("#aod-pinned-offer")
+    if pinned:
+        nodes.append(pinned)
+    nodes.extend(soup.select("#aod-offer"))
+
+    for node in nodes:
+        # Seller name
+        s_el = node.select_one("#aod-offer-soldBy a[aria-label]") or node.select_one("#aod-offer-soldBy a")
+        s_name = " ".join(s_el.get_text(" ", strip=True).split()) if s_el else ""
+        if not s_name:
+            sb_block = node.select_one("#aod-offer-soldBy")
+            if sb_block:
+                sb_txt = " ".join(sb_block.get_text(" ", strip=True).split())
+                m_s = re.search(r"Sold by\s+(.+?)(?:\s+Fulfilled|\s+\d|\s*$)", sb_txt, re.I)
+                if m_s:
+                    s_name = m_s.group(1).strip()
+
+        # Price
+        p_el = node.select_one(".a-price .a-offscreen")
+        p_txt = p_el.get_text(strip=True) if p_el else ""
+        if not p_txt:
+            whole = node.select_one(".a-price-whole")
+            if whole:
+                w = whole.get_text(strip=True).rstrip(".")
+                p_txt = f"{currency}{w}"
+
+        # Condition (New / Renewed / Used)
+        c_el = node.select_one("#aod-offer-heading")
+        cond = " ".join(c_el.get_text(" ", strip=True).split()) if c_el else "New"
+
+        if not s_name and not p_txt:
+            continue
+        key = (s_name.lower(), p_txt, cond.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        sellers.append({
+            "name": s_name or "Amazon Seller",
+            "price": p_txt,
+            "condition": cond,
+        })
+    return sellers
+
+
+def fetch_sellers(url_or_text: str, pincode: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """
+    On-demand seller fetcher (never called during background price polling).
+    Returns product summary, primary Buy Box seller, full seller list (where available),
+    and direct 'See all sellers' URL.
+    """
+    prod = fetch_product(url_or_text, pincode=pincode)
+    if not prod:
+        return None
+
+    platform = prod.get("platform", "Unknown")
+    sellers: List[Dict[str, str]] = []
+    primary_seller = prod.get("seller")
+    other_url = prod.get("other_sellers_url")
+    currency = prod.get("currency", "₹")
+
+    if primary_seller:
+        sellers.append({
+            "name": primary_seller,
+            "price": f"{currency}{prod['price']:,.2f}" if prod.get("price") else "",
+            "condition": "Buy Box",
+        })
+
+    # Amazon: Fetch server-rendered AOD multi-seller fragment
+    if platform == "Amazon" and prod.get("item_id"):
+        asin = prod["item_id"]
+        domain = "amazon.com" if "amazon.com" in prod["url"].lower() else "amazon.in"
+        aod_url = f"https://www.{domain}/gp/product/ajax/aodAjaxMain?asin={asin}&pc=dp"
+        try:
+            r = requests.get(aod_url, impersonate="chrome124", headers=AMAZON_HEADERS, timeout=15)
+            if r.status_code == 200 and len(r.text) > 500:
+                aod_sellers = _parse_amazon_aod_sellers(r.text, currency=currency)
+                for s in aod_sellers:
+                    if not any(existing["name"].lower() == s["name"].lower() and existing["price"] == s["price"] for existing in sellers):
+                        sellers.append(s)
+        except Exception as e:
+            logger.debug(f"Amazon AOD seller fetch failed for {asin}: {e}")
+
+    # Flipkart: Optionally parse /sellers?pid=... with Camoufox if binary is available
+    elif platform == "Flipkart" and other_url and CAMOUFOX_AVAILABLE:
+        cam_html = fetch_page_with_camoufox(other_url, timeout_ms=20000, pincode=pincode)
+        if cam_html:
+            # Extract seller rows if rendered
+            for m in re.finditer(r'"sellerName"\s*:\s*"([^"]+)"', cam_html):
+                sname = m.group(1).strip()
+                if sname and not any(existing["name"].lower() == sname.lower() for existing in sellers):
+                    sellers.append({"name": sname, "price": "", "condition": "Other Seller"})
+
+    return {
+        "product": prod,
+        "primary_seller": primary_seller,
+        "sellers": sellers,
+        "all_sellers_url": other_url or prod["url"],
+        "has_other_sellers_link": bool(other_url),
+    }
