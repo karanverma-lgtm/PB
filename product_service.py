@@ -2014,7 +2014,7 @@ def fetch_savana_product(url: str, pincode: Optional[str] = None) -> Optional[Di
 # Unified Fetcher
 # =====================================================================
 
-def fetch_product(url_or_text: str, pincode: Optional[str] = None) -> Optional[Dict[str, Any]]:
+def fetch_product(url_or_text: str, pincode: Optional[str] = None, include_sellers: bool = False) -> Optional[Dict[str, Any]]:
     """Automatically detect platform and fetch live product details for specified pincode."""
     clean_target = clean_url_from_text(url_or_text)
     platform = detect_platform(clean_target)
@@ -2059,6 +2059,9 @@ def fetch_product(url_or_text: str, pincode: Optional[str] = None) -> Optional[D
         res.setdefault("offers", [])
         res.setdefault("seller", None)
         res.setdefault("other_sellers_url", None)
+        res.setdefault("sellers", [])
+        if include_sellers:
+            res["sellers"] = _enrich_sellers_for_product(res, pincode=pincode)
     return res
 
 
@@ -2176,16 +2179,19 @@ def _parse_flipkart_sellers_api(api_json: Dict[str, Any], currency: str = "₹")
     return sellers
 
 
-def fetch_sellers(url_or_text: str, pincode: Optional[str] = None) -> Optional[Dict[str, Any]]:
-    """
-    On-demand seller fetcher (never called during background price polling).
-    Returns product summary, primary Buy Box seller, full seller list (where available),
-    and direct 'See all sellers' URL.
-    """
-    prod = fetch_product(url_or_text, pincode=pincode)
-    if not prod:
+def _norm_price_val(p_str: str) -> Optional[float]:
+    """Parse numeric price value from formatted currency string for deduplication/sorting."""
+    m_num = re.search(r"([\d,]+(?:\.\d+)?)", str(p_str or ""))
+    if not m_num:
+        return None
+    try:
+        return round(float(m_num.group(1).replace(",", "")), 2)
+    except ValueError:
         return None
 
+
+def _enrich_sellers_for_product(prod: Dict[str, Any], pincode: Optional[str] = None) -> List[Dict[str, str]]:
+    """Fetch full multi-seller list and pricing for an already-fetched product dict."""
     platform = prod.get("platform", "Unknown")
     sellers: List[Dict[str, str]] = []
     primary_seller = prod.get("seller")
@@ -2200,15 +2206,6 @@ def fetch_sellers(url_or_text: str, pincode: Optional[str] = None) -> Optional[D
         })
 
     # Amazon: Fetch server-rendered AOD multi-seller fragment
-    def _norm_price_val(p_str: str) -> Optional[float]:
-        m_num = re.search(r"([\d,]+(?:\.\d+)?)", str(p_str or ""))
-        if not m_num:
-            return None
-        try:
-            return round(float(m_num.group(1).replace(",", "")), 2)
-        except ValueError:
-            return None
-
     if platform == "Amazon" and prod.get("item_id"):
         asin = prod["item_id"]
         domain = "amazon.com" if "amazon.com" in prod["url"].lower() else "amazon.in"
@@ -2252,7 +2249,6 @@ def fetch_sellers(url_or_text: str, pincode: Optional[str] = None) -> Optional[D
             if r_fk.status_code == 200:
                 fk_sellers = _parse_flipkart_sellers_api(r_fk.json(), currency=currency)
                 if fk_sellers:
-                    # Merge API sellers with primary Buy Box seller without duplicates
                     for s in fk_sellers:
                         s_val = _norm_price_val(s["price"])
                         existing_idx = next(
@@ -2268,15 +2264,28 @@ def fetch_sellers(url_or_text: str, pincode: Optional[str] = None) -> Optional[D
                             sellers.append(s)
                         elif s.get("condition") and "Buy Box" in sellers[existing_idx].get("condition", ""):
                             sellers[existing_idx]["condition"] = f"Buy Box • {s['condition']}"
-                    # Sort all sellers lowest-price-first
                     sellers.sort(key=lambda x: _norm_price_val(x["price"]) if _norm_price_val(x["price"]) is not None else float("inf"))
         except Exception as e:
             logger.debug(f"Flipkart product-sellers API failed for {pid}: {e}")
 
+    return sellers
+
+
+def fetch_sellers(url_or_text: str, pincode: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """
+    On-demand seller fetcher (never called during background price polling).
+    Returns product summary, primary Buy Box seller, full seller list (where available),
+    and direct 'See all sellers' URL.
+    """
+    prod = fetch_product(url_or_text, pincode=pincode, include_sellers=True)
+    if not prod:
+        return None
+
+    other_url = prod.get("other_sellers_url")
     return {
         "product": prod,
-        "primary_seller": primary_seller,
-        "sellers": sellers,
+        "primary_seller": prod.get("seller"),
+        "sellers": prod.get("sellers") or [],
         "all_sellers_url": other_url or prod["url"],
         "has_other_sellers_link": bool(other_url),
     }

@@ -139,6 +139,26 @@ def format_offers_block(offers: list | None, max_items: int = 25) -> str:
     return f"\n💳 <b>Available Offers ({len(lines)}):</b>\n" + "\n".join(lines) + "\n"
 
 
+def format_sellers_block(sellers: list | None, fallback_seller: str | None = None, max_items: int = 25) -> str:
+    """Format all sellers and their prices as a compact HTML block for preview cards."""
+    if sellers:
+        lines = []
+        for idx, s in enumerate(sellers[:max_items], 1):
+            sname = html.escape(str(s.get("name") or "Seller"))
+            sprice = html.escape(str(s.get("price") or ""))
+            scond = html.escape(str(s.get("condition") or ""))
+            entry = f"• #{idx} <b>{sname}</b>"
+            if sprice:
+                entry += f" — <code>{sprice}</code>"
+            if scond:
+                entry += f" <i>({scond})</i>"
+            lines.append(entry)
+        return f"\n🏬 <b>Sellers & Pricing ({len(sellers)}):</b>\n" + "\n".join(lines) + "\n"
+    if fallback_seller:
+        return f"🏬 <b>Seller:</b> <code>{html.escape(fallback_seller)}</code>\n"
+    return ""
+
+
 def build_offers_message(product: dict, user_pin: str) -> tuple[str, InlineKeyboardMarkup]:
     """Build detailed live offers message and action keyboard for /offers command & inline button."""
     platform = product.get("platform", "Store")
@@ -539,11 +559,13 @@ async def track_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 parse_mode=ParseMode.HTML,
                 reply_markup=reply_markup,
             )
+            if len(caption) > 1000 and offers_block:
+                await update.message.reply_text(offers_block.strip()[:4090], parse_mode=ParseMode.HTML)
             return
         except Exception as e:
             logger.debug(f"Could not send photo, falling back to text: {e}")
 
-    await update.message.reply_text(caption, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+    await update.message.reply_text(caption[:4090], parse_mode=ParseMode.HTML, reply_markup=reply_markup)
 
 
 async def list_products_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -865,8 +887,8 @@ async def handle_url_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
     user_pin = database.get_user_pincode(user.id) if user else "110001"
     loading = await update.message.reply_text(f"🔎 {platform} link detected! Checking live price for PIN <code>{user_pin}</code>...", parse_mode=ParseMode.HTML)
 
-    # Run scraper in thread pool to prevent blocking asyncio event loop
-    product = await asyncio.to_thread(product_service.fetch_product, raw_text, user_pin)
+    # Run scraper in thread pool with full seller pricing enabled for default preview card
+    product = await asyncio.to_thread(product_service.fetch_product, raw_text, user_pin, True)
     if not product:
         await loading.edit_text(
             f"❌ <b>Could not extract details from this {platform} link.</b>\n\n"
@@ -892,7 +914,7 @@ async def handle_url_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
     badge_escaped = html.escape(product.get("platform_badge", platform))
     url_escaped = html.escape(product["url"])
     offers_block = format_offers_block(product.get("offers"))
-    seller_line = f"🏬 <b>Seller:</b> <code>{html.escape(product['seller'])}</code>\n" if product.get("seller") else ""
+    sellers_block = format_sellers_block(product.get("sellers"), product.get("seller"))
 
     # Store in memory for instant access
     context.user_data[f"prod_{cb_id}"] = product
@@ -902,8 +924,8 @@ async def handle_url_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
             f"{badge_escaped} <b>{title_escaped}...</b>\n"
             f"━━━━━━━━━━━━━━━━━━━\n"
             f"❌ <b>Stock Status:</b> <code>Currently Out of Stock</code>\n"
-            f"{seller_line}"
             f"📍 <b>Delivery PIN:</b> <code>{user_pin}</code> (Change with <code>/pincode</code>)\n"
+            f"{sellers_block}"
             f"{offers_block}\n"
             f"🔔 This item is currently unavailable. Click below to get an instant <b>Back-in-Stock Restock Alert</b> the moment it's available, or track a target price with <code>/track {url_escaped} &lt;price&gt;</code>."
         )
@@ -924,8 +946,8 @@ async def handle_url_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
             f"{badge_escaped} <b>{title_escaped}...</b>\n"
             f"━━━━━━━━━━━━━━━━━━━\n"
             f"💰 <b>Current Price:</b> <code>{currency}{curr_price:,.2f}</code>\n"
-            f"{seller_line}"
             f"📍 <b>Delivery PIN:</b> <code>{user_pin}</code> (Change with <code>/pincode</code>)\n"
+            f"{sellers_block}"
             f"{offers_block}\n"
             f"🎯 <b>Select your desired price drop below:</b> or reply with <code>/track {url_escaped} &lt;price&gt;</code>"
         )
@@ -955,11 +977,16 @@ async def handle_url_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 parse_mode=ParseMode.HTML,
                 reply_markup=reply_markup,
             )
+            # If sellers + offers exceeded Telegram's 1024-char photo caption limit, send full details below
+            if len(caption) > 1000 and (sellers_block or offers_block):
+                full_details = f"{sellers_block}{offers_block}".strip()
+                if full_details:
+                    await update.message.reply_text(full_details[:4090], parse_mode=ParseMode.HTML)
             return
         except Exception as e:
             logger.debug(f"Could not send photo, falling back to text: {e}")
 
-    await update.message.reply_text(caption, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+    await update.message.reply_text(caption[:4090], parse_mode=ParseMode.HTML, reply_markup=reply_markup)
 
 
 # ---------------------------------------------------------

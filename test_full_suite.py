@@ -252,7 +252,9 @@ def run_tests():
     }
     parsed_fk_sellers = product_service._parse_flipkart_sellers_api(fk_api_sample)
     assert len(parsed_fk_sellers) == 2 and parsed_fk_sellers[0]["name"] == "CORSECA" and parsed_fk_sellers[0]["price"] == "₹78,490.00", f"Unexpected FK API sellers: {parsed_fk_sellers}"
-    print("  ✅ Amazon/Flipkart multi-seller pricing extraction & /sellers formatting verified.")
+    sellers_blk = bot.format_sellers_block(parsed_fk_sellers)
+    assert "Sellers & Pricing (2)" in sellers_blk and "CORSECA" in sellers_blk and "₹78,490.00" in sellers_blk
+    print("  ✅ Amazon/Flipkart multi-seller pricing extraction & default preview formatting verified.")
 
     # 4. Database Integration Test
     print("\n💾 4. Database Integration & Stock Transition Tests:")
