@@ -219,6 +219,26 @@ def extract_amazon_offers(soup: BeautifulSoup) -> List[str]:
             else:
                 offers.append(c_txt)
 
+    # 3. Alternate Amazon SOPP vertical offer list (.sopp-offer-container)
+    sopp_items: List[tuple[int, str]] = []
+    for el in soup.select(".sopp-offer-container"):
+        title_el = el.select_one(".sopp-offer-title")
+        desc_el = el.select_one(".description")
+        if not title_el or not desc_el:
+            continue
+        t_txt = " ".join(title_el.get_text(" ", strip=True).split()).rstrip(":").strip()
+        c_txt = " ".join(desc_el.get_text(" ", strip=True).split())
+        c_txt = re.sub(r"\b(?:View products|See All|See more|Details|T&C)\b.*$", "", c_txt, flags=re.I).strip(" .:-")
+        if not c_txt or len(c_txt) < 8:
+            continue
+        formatted = f"{t_txt}: {c_txt}" if t_txt and not c_txt.lower().startswith(t_txt.lower()) else c_txt
+        tl = t_txt.lower()
+        prio = 0 if "bank" in tl else (1 if "cashback" in tl else (2 if "partner" in tl else 3))
+        sopp_items.append((prio, formatted))
+
+    for _, formatted in sorted(sopp_items, key=lambda x: x[0]):
+        offers.append(formatted)
+
     return _dedupe_offers(offers, limit=4)
 
 

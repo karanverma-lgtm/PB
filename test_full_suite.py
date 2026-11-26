@@ -130,7 +130,23 @@ def run_tests():
     amz_offers = product_service.extract_amazon_offers(BeautifulSoup(amz_offer_html, "html.parser"))
     assert len(amz_offers) == 3, f"Expected 3 Amazon offers, got {amz_offers}"
     assert "Axis Bank Credit Cards" in amz_offers[1] and "1 offer" not in amz_offers[1], f"Unexpected Amazon bank offer: {amz_offers[1]}"
-    print(f"  ✅ Amazon offer extraction verified ({len(amz_offers)} offers: coupon, bank, cashback).")
+
+    amz_sopp_html = """
+    <html><body>
+      <div class="sopp-offer-container">
+        <span class="sopp-offer-title">Cashback:</span>
+        <span class="description">Get 5% back with Amazon Pay ICICI Bank credit card.</span>
+      </div>
+      <div class="sopp-offer-container">
+        <span class="sopp-offer-title">Bank Offer:</span>
+        <span class="description">15% Instant Discount up to INR 120 on Indian Bank Credit Card</span>
+      </div>
+      <div class="sopp-offer-container"><span>See 2 more</span></div>
+    </body></html>
+    """
+    amz_sopp_offers = product_service.extract_amazon_offers(BeautifulSoup(amz_sopp_html, "html.parser"))
+    assert len(amz_sopp_offers) == 2 and amz_sopp_offers[0].startswith("Bank Offer:"), f"Unexpected SOPP offers: {amz_sopp_offers}"
+    print(f"  ✅ Amazon offer extraction verified ({len(amz_offers)} itembox + {len(amz_sopp_offers)} SOPP offers).")
 
     fk_offer_html = (
         '<html><body><script>{"type":"NepOffers","offerTitle":"Flipkart Axis","offerSubTitleRC":{"value":{"contentList":[{"contentValue":"Credit Card"}]}},"discountedPriceText":"₹2,995 off"}'
